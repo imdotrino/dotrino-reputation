@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   reputation:
-    image: ghcr.io/dotrino/dotrino-reputation:latest
+    image: ghcr.io/imdotrino/dotrino-reputation:latest
     # Para compilar de fuente en vez de bajar la imagen: comentá `image` y descomentá:
     # build: ./server
     environment:
