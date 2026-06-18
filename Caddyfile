@@ -1,0 +1,5 @@
+# Caddy saca/renueva el cert TLS de Let's Encrypt y reverse-proxea al servicio
+# de reputación. Pasa X-Forwarded-For para el rate-limit por IP.
+{$REP_DOMAIN} {
+	reverse_proxy reputation:8091
+}

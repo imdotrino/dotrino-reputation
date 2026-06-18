@@ -1,0 +1,65 @@
+# Nodo de reputación autohospedado, turnkey. Un tercero hace:
+#   cp .env.docker.example .env   (y completa REP_DOMAIN + REP_DB_PASSWORD)
+#   docker compose up -d
+# y obtiene https://reputation.sudominio.com con TLS automático (Caddy + LE).
+#
+# Requisitos: REP_DOMAIN debe apuntar (A/AAAA) a este host, con 80/443 abiertos
+# (Caddy los usa para el challenge ACME). DNS directo, sin proxy de Cloudflare.
+#
+# A diferencia de geo/proxy, este servicio es PERSISTENTE (guarda atestaciones
+# firmadas) → hacé backups del volumen `reputation-db`.
+#
+# Para PROBAR sin dominio/TLS: comentá `caddy` y descomentá el `ports` de `reputation`.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: reputation
+      POSTGRES_PASSWORD: ${REP_DB_PASSWORD:-reputation}
+      POSTGRES_DB: reputation
+    volumes:
+      - reputation-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reputation -d reputation"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  reputation:
+    image: ghcr.io/dotrino/dotrino-reputation:latest
+    # Para compilar de fuente en vez de bajar la imagen: comentá `image` y descomentá:
+    # build: ./server
+    environment:
+      PORT: 8091
+      DATABASE_URL: postgres://reputation:${REP_DB_PASSWORD:-reputation}@db:5432/reputation
+      REP_RL_READ_PER_MIN: ${REP_RL_READ_PER_MIN:-600}
+      REP_RL_WRITE_PER_MIN: ${REP_RL_WRITE_PER_MIN:-120}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    # Para probar sin Caddy/TLS, descomentá:
+    # ports:
+    #   - "8091:8091"
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      REP_DOMAIN: ${REP_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - reputation
+    restart: unless-stopped
+
+volumes:
+  reputation-db:
+  caddy-data:
+  caddy-config:

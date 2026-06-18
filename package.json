@@ -1,0 +1,37 @@
+{
+  "name": "@dotrino/reputation",
+  "version": "0.5.0",
+  "description": "Cliente del registro de reputación de Dotrino (reputation.dotrino.com): atestaciones firmadas + agregación anti-sybil anclada en web-of-trust",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "reputation",
+    "web-of-trust",
+    "sybil-resistant",
+    "attestation",
+    "dotrino",
+    "ecdsa"
+  ],
+  "author": "seyacat",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imdotrino/dotrino-reputation.git"
+  }
+}
