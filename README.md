@@ -1,5 +1,7 @@
 # @dotrino/reputation
 
+> **Parte del ecosistema [Dotrino](https://dotrino.com).** Misión: aplicaciones que resuelven problemas comunes, respetando tu privacidad — sin anuncios, sin cookies, sin rastreo de datos, sin vender tu identidad a nadie.
+
 **Registro de reputación** del ecosistema Dotrino: `reputation.dotrino.com`.
 **Quinto pilar**, complementario a identidad, transporte (proxy), almacenamiento
 (store) y descubrimiento (geo).
