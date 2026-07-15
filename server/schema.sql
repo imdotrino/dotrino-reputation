@@ -97,3 +97,36 @@ CREATE TABLE IF NOT EXISTS derived (
     PRIMARY KEY (player_id, indicator, scope)
 );
 CREATE INDEX IF NOT EXISTS idx_derived_rank ON derived (indicator, scope, value DESC);
+
+-- ── PREGUNTAS y RESPUESTAS sobre un sujeto ──────────────────────────────────
+-- Registros públicos FIRMADOS, como las atestaciones: el server sólo almacena y
+-- sirve crudo. Una pregunta la crea un autor sobre un sujeto (perfil/dominio/
+-- handle); cualquier perfil la responde (una respuesta vigente por perfil). El
+-- ORDEN de relevancia NO lo calcula el server: el cliente ordena por la
+-- credibilidad sumada de quienes responden (anti-sybil, anclado en tu red).
+-- `question_id` es content-addressed: sha256(canónico {op:'question',subject,issuer,text,ts}).
+CREATE TABLE IF NOT EXISTS questions (
+    question_id TEXT PRIMARY KEY,
+    subject_id  TEXT NOT NULL,                -- pubkeyId(subjectRef)
+    subject     TEXT NOT NULL,                -- subjectRef canónico
+    issuer_id   TEXT NOT NULL,                -- sha256(JWK del autor)
+    issuer      TEXT NOT NULL,                -- JWK string del autor
+    text        TEXT NOT NULL,                -- <= 280
+    ts          BIGINT NOT NULL,
+    signature   TEXT NOT NULL,                -- firma del autor sobre la pregunta
+    updated_at  BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_questions_subject ON questions (subject_id);
+
+-- Una respuesta VIGENTE por (pregunta, emisor): re-responder pisa la anterior.
+CREATE TABLE IF NOT EXISTS answers (
+    question_id TEXT NOT NULL,
+    issuer_id   TEXT NOT NULL,                -- sha256(JWK del que responde)
+    issuer      TEXT NOT NULL,                -- JWK string
+    text        TEXT NOT NULL,                -- <= 280
+    ts          BIGINT NOT NULL,
+    signature   TEXT NOT NULL,                -- firma del emisor sobre la respuesta
+    updated_at  BIGINT NOT NULL,
+    PRIMARY KEY (question_id, issuer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_answers_question ON answers (question_id);

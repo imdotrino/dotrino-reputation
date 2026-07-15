@@ -1,7 +1,7 @@
 {
   "name": "@dotrino/reputation",
-  "version": "0.5.0",
-  "description": "Cliente del registro de reputación de Dotrino (reputation.dotrino.com): atestaciones firmadas + agregación anti-sybil anclada en web-of-trust",
+  "version": "0.6.0",
+  "description": "Cliente del registro de reputación de Dotrino (backend rep.dotrino.com): atestaciones firmadas sobre cualquier sujeto (perfil/dominio/handle) + preguntas/respuestas + agregación anti-sybil anclada en web-of-trust",
   "type": "module",
   "main": "src/index.js",
   "module": "src/index.js",

@@ -68,11 +68,60 @@ export interface AggregateResult {
   samples: Array<{ issuer: string; indicators: Indicators; credibility: number; txBound: boolean; notes?: string }>
 }
 
+/** Una pregunta atada a un sujeto (firmada por su autor). */
+export interface Question {
+  questionId: string
+  subject: string
+  issuer: string
+  text: string
+  ts: number
+  /** Conteo crudo de respuestas (señal débil; el orden real lo da rankQuestions). */
+  answerCount: number
+}
+
+/** Una respuesta a una pregunta (firmada por su emisor). */
+export interface Answer {
+  issuer: string
+  text: string
+  ts: number
+}
+
+/** Pregunta con su peso anti-sybil (suma de credibilidad de quienes responden). */
+export interface RankedQuestion {
+  question: Question
+  /** Suma de la credibilidad (anclada en tu red) de los respondedores. Clave de orden. */
+  weight: number
+  /** Nº de respondedores con credibilidad ≥ minCredibility (de tu red). */
+  weightedAnswerers: number
+  /** Nº de respondedores distintos (señal débil, incluye desconocidos). */
+  rawAnswerCount: number
+  /** Respuestas deduplicadas por emisor, ordenadas por credibilidad desc. */
+  answers: Array<Answer & { credibility: number }>
+}
+
 export interface ReputationClient {
   publishRating (input: PublishRatingInput): Promise<{ ok: true; txBound: boolean }>
   removeRating (input: { subject: string; now?: number }): Promise<{ ok: true }>
+  /** Retira MI atestación de UN canal (des-calificar un eje). */
+  removeChannel (input: { subject: string; channel: string; now?: number }): Promise<{ ok: true }>
   getRatings (subject: string): Promise<{ attestations: Attestation[] }>
   aggregateTrust (subject: string, cfg: AggregateConfig): Promise<AggregateResult>
+  /** Credibilidad de la opinión de `pk` para MÍ en [0,1] (peso anti-sybil standalone). */
+  credibilityOf (pk: string, cfg: AggregateConfig): Promise<number>
+  /** Publica MI pregunta sobre un sujeto (firmada). */
+  postQuestion (input: { subject: string; text: string; now?: number }): Promise<{ ok: true; questionId: string }>
+  /** Publica/reemplaza MI respuesta a una pregunta (una por perfil). */
+  postAnswer (input: { questionId: string; text: string; now?: number }): Promise<{ ok: true }>
+  /** Preguntas crudas sobre un sujeto (memoizada). */
+  getQuestions (subject: string): Promise<{ questions: Question[] }>
+  /** Respuestas crudas a una pregunta (memoizada). */
+  getAnswers (questionId: string): Promise<{ answers: Answer[] }>
+  /** Retira MI pregunta (tombstone firmado; sólo el autor). */
+  removeQuestion (input: { questionId: string; subject?: string; now?: number }): Promise<{ ok: true }>
+  /** Retira MI respuesta a una pregunta. */
+  removeAnswer (input: { questionId: string; now?: number }): Promise<{ ok: true }>
+  /** Ordena las preguntas de un sujeto por credibilidad sumada de sus respondedores (anti-sybil). */
+  rankQuestions (subject: string, cfg: AggregateConfig): Promise<RankedQuestion[]>
   /** Atestación de UN canal independiente (tipo "atestación"): {op:'rate', subject, issuer, channel, value 0..5, ts}. */
   rate (input: { subject: string; channel: string; value: number; notes?: string; receipt?: Receipt; now?: number }): Promise<{ ok: true; channel: string; txBound: boolean }>
   /** Evento co-firmado de un indicador DERIVADO (elo, …): {data:{op:'event',indicator,scope,a,b,outcome,ts}, sigA, sigB}. */
@@ -97,6 +146,20 @@ export interface VaultReputation {
   removeRating (input: { subject: string; now?: number }): Promise<{ ok: true }>
   /** Califica un canal independiente (atestación), p.ej. 'fairplay'. */
   rateChannel (subject: string, channel: string, value: number, opts?: { notes?: string; receipt?: Receipt }): Promise<{ ok: true; channel: string; txBound: boolean }>
+  /** Des-calificar un eje (retira mi atestación de ese canal). */
+  removeChannel (subject: string, channel: string): Promise<{ ok: true }>
+  /** Credibilidad de `pk` para MÍ en [0,1], pre-cableada con mi web-of-trust. */
+  credibilityOf (pk: string, opts?: Partial<AggregateConfig>): Promise<number>
+  /** Publica mi pregunta sobre un sujeto. */
+  postQuestion (subject: string, text: string): Promise<{ ok: true; questionId: string }>
+  /** Responde una pregunta (una respuesta por perfil). */
+  answer (questionId: string, text: string): Promise<{ ok: true }>
+  getQuestions (subject: string): Promise<{ questions: Question[] }>
+  getAnswers (questionId: string): Promise<{ answers: Answer[] }>
+  /** Preguntas del sujeto ordenadas por credibilidad sumada de respondedores (anti-sybil). */
+  rankQuestions (subject: string, opts?: Partial<AggregateConfig>): Promise<RankedQuestion[]>
+  removeQuestion (questionId: string, subject?: string): Promise<{ ok: true }>
+  removeAnswer (questionId: string): Promise<{ ok: true }>
   /** ELO del jugador en un scope (default 'chess') → {elo, games} | null. */
   eloOf (player: string, scope?: string): Promise<EloEntry | null>
   /** Valor de cualquier indicador derivado. */
@@ -118,3 +181,18 @@ export function createVaultReputation (identity: VaultIdentity, opts?: { baseUrl
 export function samePubkey (a: string, b: string): boolean
 export function pubkeyId (jwkString: string): string
 export function canonicalStringify (value: unknown): string
+
+// ── Sujetos canónicos ──────────────────────────────────────────────
+/** Tipos de sujeto único que se pueden calificar/preguntar. */
+export type SubjectType = 'profile' | 'domain' | 'x' | 'github' | 'linkedin' | 'email'
+export const SUBJECT_TYPES: SubjectType[]
+/** Codifica un sujeto a su referencia canónica estable (async por el hash de email). */
+export function subjectRef (type: SubjectType, value: string): Promise<string>
+/** Descompone una referencia canónica para render (email es `opaque`: es un hash). */
+export function parseSubjectRef (ref: string): { type: SubjectType | 'unknown'; value: string; opaque?: boolean }
+/** Adivina el tipo de sujeto desde texto pegado por el usuario (o null). */
+export function detectSubjectType (input: string): SubjectType | null
+/** sha256 hex con WebCrypto. */
+export function sha256hex (str: string): Promise<string>
+/** ¿Parece un JWK P-256? (un perfil como sujeto es su JWK tal cual). */
+export function isJwk (s: string): boolean

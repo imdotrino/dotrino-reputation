@@ -7,13 +7,19 @@
 //
 // Endpoints:
 //   PUT    /ratings   publica/reemplaza una atestación firmada {data, signature}
-//   DELETE /ratings   retira la atestación del emisor (tombstone firmado)
-//   GET    /ratings?subject=<JWK>   atestaciones crudas sobre un sujeto (pública)
+//   DELETE /ratings   retira la atestación del emisor (tombstone; con `channel` = un eje)
+//   GET    /ratings?subject=<ref>   atestaciones crudas sobre un sujeto (pública)
+//   PUT    /questions  publica una pregunta firmada sobre un sujeto → {questionId}
+//   DELETE /questions  retira la propia pregunta (tombstone firmado)
+//   GET    /questions?subject=<ref>  preguntas crudas de un sujeto (pública)
+//   PUT    /answers    publica/reemplaza la propia respuesta a una pregunta
+//   DELETE /answers    retira la propia respuesta (tombstone firmado)
+//   GET    /answers?question=<id>    respuestas crudas a una pregunta (pública)
 //   GET    /health
 
 const http = require('node:http');
 const db = require('./db.js');
-const { verifySignature, pubkeyId, samePubkey, verifyReceipt } = require('./signature.js');
+const { verifySignature, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex } = require('./signature.js');
 const rl = require('./rateLimiter.js');
 
 const PORT = Number(process.env.PORT || 8091);
@@ -129,7 +135,16 @@ async function handleDelete(req, res, now) {
     if (!verifySignature(data, signature, data.issuer))
         return send(res, 401, { error: 'firma inválida' });
     if (!freshEnough(data.ts, now)) return send(res, 401, { error: 'sobre vencido' });
-    await db.deleteRating(pubkeyId(data.issuer), pubkeyId(data.subject));
+    const issuerId = pubkeyId(data.issuer), subjectId = pubkeyId(data.subject);
+    if (typeof data.channel === 'string' && data.channel) {
+        // Des-calificar UN eje (modelo por-canal).
+        if (!/^[a-z][a-z0-9_]{0,23}$/.test(data.channel)) return send(res, 400, { error: 'channel inválido (slug)' });
+        await db.deleteAttestation(issuerId, subjectId, data.channel);
+    } else {
+        // Des-calificar TODO: bundle legacy + todos los canales del par.
+        await db.deleteRating(issuerId, subjectId);
+        await db.deleteAttestationsForPair(issuerId, subjectId);
+    }
     return send(res, 200, { ok: true });
 }
 
@@ -228,6 +243,92 @@ async function handleGetDerived(req, res, url) {
     return send(res, 200, { player, indicator, scope, value: d.value, count: d.count });
 }
 
+// ── Preguntas y respuestas ──────────────────────────────────────────────────
+// Registros públicos FIRMADOS, como las atestaciones: el server sólo almacena y
+// sirve crudo; el ORDEN de relevancia lo pondera el CLIENTE (rankQuestions) por
+// la credibilidad de quienes responden (anti-sybil). question_id es
+// content-addressed: sha256(canónico {op:'question',subject,issuer,text,ts}).
+async function handlePutQuestion(req, res, now) {
+    const { data, signature } = (await readBody(req)) || {};
+    if (!data || typeof data !== 'object' || data.op !== 'question')
+        return send(res, 400, { error: 'op debe ser "question"' });
+    const { subject, issuer, text, ts } = data;
+    if (typeof subject !== 'string' || !subject || typeof issuer !== 'string' || !issuer)
+        return send(res, 400, { error: 'subject e issuer requeridos' });
+    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
+    if (text.length > 280) return send(res, 400, { error: 'text máximo 280' });
+    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
+    const questionId = sha256hex(canonicalStringify({ op: 'question', subject, issuer, text, ts }));
+    await db.upsertQuestion({
+        questionId, subjectId: pubkeyId(subject), subject,
+        issuerId: pubkeyId(issuer), issuer, text, ts, signature, updatedAt: now
+    });
+    return send(res, 200, { ok: true, questionId });
+}
+
+async function handleDeleteQuestion(req, res, now) {
+    const { data, signature } = (await readBody(req)) || {};
+    if (!data || typeof data !== 'object' || data.op !== 'delquestion')
+        return send(res, 400, { error: 'op debe ser "delquestion"' });
+    const { questionId, issuer, ts } = data;
+    if (typeof questionId !== 'string' || typeof issuer !== 'string')
+        return send(res, 400, { error: 'questionId e issuer requeridos' });
+    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido' });
+    const removed = await db.deleteQuestion(questionId, pubkeyId(issuer));
+    return send(res, 200, { ok: true, removed: removed > 0 });
+}
+
+async function handleGetQuestions(req, res, url) {
+    const subject = url.searchParams.get('subject');
+    if (!subject) return send(res, 400, { error: 'subject requerido' });
+    let limit = Number(url.searchParams.get('limit') || 200);
+    limit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit || 200));
+    const questions = await db.questionsForSubject(pubkeyId(subject), limit);
+    return send(res, 200, { questions });
+}
+
+async function handlePutAnswer(req, res, now) {
+    const { data, signature } = (await readBody(req)) || {};
+    if (!data || typeof data !== 'object' || data.op !== 'answer')
+        return send(res, 400, { error: 'op debe ser "answer"' });
+    const { questionId, issuer, text, ts } = data;
+    if (typeof questionId !== 'string' || !questionId || typeof issuer !== 'string' || !issuer)
+        return send(res, 400, { error: 'questionId e issuer requeridos' });
+    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
+    if (text.length > 280) return send(res, 400, { error: 'text máximo 280' });
+    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
+    if (!(await db.questionExists(questionId))) return send(res, 400, { error: 'pregunta inexistente' });
+    await db.upsertAnswer({
+        questionId, issuerId: pubkeyId(issuer), issuer, text, ts, signature, updatedAt: now
+    });
+    return send(res, 200, { ok: true });
+}
+
+async function handleDeleteAnswer(req, res, now) {
+    const { data, signature } = (await readBody(req)) || {};
+    if (!data || typeof data !== 'object' || data.op !== 'delanswer')
+        return send(res, 400, { error: 'op debe ser "delanswer"' });
+    const { questionId, issuer, ts } = data;
+    if (typeof questionId !== 'string' || typeof issuer !== 'string')
+        return send(res, 400, { error: 'questionId e issuer requeridos' });
+    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido' });
+    const removed = await db.deleteAnswer(questionId, pubkeyId(issuer));
+    return send(res, 200, { ok: true, removed: removed > 0 });
+}
+
+async function handleGetAnswers(req, res, url) {
+    const questionId = url.searchParams.get('question');
+    if (!questionId) return send(res, 400, { error: 'question requerido' });
+    let limit = Number(url.searchParams.get('limit') || 500);
+    limit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit || 500));
+    const answers = await db.answersForQuestion(questionId, limit);
+    return send(res, 200, { answers });
+}
+
 const server = http.createServer(async (req, res) => {
     const now = Date.now();
     try {
@@ -242,6 +343,26 @@ const server = http.createServer(async (req, res) => {
             if (req.method === 'PUT') return await handlePut(req, res, now);
             if (req.method === 'DELETE') return await handleDelete(req, res, now);
             if (req.method === 'GET') return await handleGet(req, res, url);
+            return send(res, 405, { error: 'método no permitido' });
+        }
+
+        // ── Preguntas y respuestas sobre un sujeto ──────────────────────
+        if (url.pathname === '/questions') {
+            const cls = req.method === 'GET' ? 'read' : 'write';
+            const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
+            if (!allowed) return send(res, 429, { error: 'demasiadas solicitudes' }, { 'retry-after': String(retryAfter) });
+            if (req.method === 'PUT') return await handlePutQuestion(req, res, now);
+            if (req.method === 'DELETE') return await handleDeleteQuestion(req, res, now);
+            if (req.method === 'GET') return await handleGetQuestions(req, res, url);
+            return send(res, 405, { error: 'método no permitido' });
+        }
+        if (url.pathname === '/answers') {
+            const cls = req.method === 'GET' ? 'read' : 'write';
+            const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
+            if (!allowed) return send(res, 429, { error: 'demasiadas solicitudes' }, { 'retry-after': String(retryAfter) });
+            if (req.method === 'PUT') return await handlePutAnswer(req, res, now);
+            if (req.method === 'DELETE') return await handleDeleteAnswer(req, res, now);
+            if (req.method === 'GET') return await handleGetAnswers(req, res, url);
             return send(res, 405, { error: 'método no permitido' });
         }
 

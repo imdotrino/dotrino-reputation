@@ -149,10 +149,82 @@ async function insertEventAndApply({ eventId, indicator, scope, a, b, outcome, t
     }
 }
 
+// Borra TODAS las atestaciones por canal de un par (emisor, sujeto): el
+// des-calificar completo (DELETE /ratings sin `channel`).
+async function deleteAttestationsForPair(issuerId, subjectId) {
+    await pool.query('DELETE FROM attestations WHERE issuer_id=$1 AND subject_id=$2', [issuerId, subjectId]);
+}
+
+// ── Preguntas y respuestas ──────────────────────────────────────────────────
+async function upsertQuestion(q) {
+    await pool.query(
+        `INSERT INTO questions (question_id, subject_id, subject, issuer_id, issuer, text, ts, signature, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (question_id) DO UPDATE SET
+            text = EXCLUDED.text, ts = EXCLUDED.ts, signature = EXCLUDED.signature, updated_at = EXCLUDED.updated_at`,
+        [q.questionId, q.subjectId, q.subject, q.issuerId, q.issuer, q.text, q.ts, q.signature, q.updatedAt]
+    );
+}
+
+// Preguntas de un sujeto, cada una con su conteo CRUDO de respuestas (señal
+// débil; el orden real lo pondera el cliente por credibilidad de respondedores).
+async function questionsForSubject(subjectId, limit) {
+    const { rows } = await pool.query(
+        `SELECT q.question_id, q.subject, q.issuer, q.text, q.ts,
+                (SELECT COUNT(*) FROM answers a WHERE a.question_id = q.question_id) AS answer_count
+         FROM questions q WHERE q.subject_id = $1 ORDER BY q.ts DESC LIMIT $2`,
+        [subjectId, limit]
+    );
+    return rows.map(r => ({
+        questionId: r.question_id, subject: r.subject, issuer: r.issuer,
+        text: r.text, ts: Number(r.ts), answerCount: Number(r.answer_count)
+    }));
+}
+
+async function questionExists(questionId) {
+    const { rowCount } = await pool.query('SELECT 1 FROM questions WHERE question_id=$1', [questionId]);
+    return rowCount > 0;
+}
+
+// Sólo el AUTOR borra su pregunta; sus respuestas caen con ella.
+async function deleteQuestion(questionId, issuerId) {
+    const { rowCount } = await pool.query('DELETE FROM questions WHERE question_id=$1 AND issuer_id=$2', [questionId, issuerId]);
+    if (rowCount) await pool.query('DELETE FROM answers WHERE question_id=$1', [questionId]);
+    return rowCount;
+}
+
+// Una respuesta vigente por (pregunta, emisor). Guarda anti-rollback: sólo pisa
+// si el `ts` nuevo es mayor (un sobre viejo no puede revertir una edición).
+async function upsertAnswer(a) {
+    await pool.query(
+        `INSERT INTO answers (question_id, issuer_id, issuer, text, ts, signature, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT (question_id, issuer_id) DO UPDATE SET
+            text = EXCLUDED.text, ts = EXCLUDED.ts, signature = EXCLUDED.signature, updated_at = EXCLUDED.updated_at
+         WHERE answers.ts < EXCLUDED.ts`,
+        [a.questionId, a.issuerId, a.issuer, a.text, a.ts, a.signature, a.updatedAt]
+    );
+}
+
+async function answersForQuestion(questionId, limit) {
+    const { rows } = await pool.query(
+        `SELECT issuer, text, ts FROM answers WHERE question_id=$1 ORDER BY ts DESC LIMIT $2`,
+        [questionId, limit]
+    );
+    return rows.map(r => ({ issuer: r.issuer, text: r.text, ts: Number(r.ts) }));
+}
+
+async function deleteAnswer(questionId, issuerId) {
+    const { rowCount } = await pool.query('DELETE FROM answers WHERE question_id=$1 AND issuer_id=$2', [questionId, issuerId]);
+    return rowCount;
+}
+
 async function close() { if (pool) await pool.end(); pool = null; }
 
 module.exports = {
     init, upsertRating, ratingsForSubject, deleteRating,
-    upsertAttestation, deleteAttestation, attestationsForSubject,
-    getDerived, insertEventAndApply, isDerivedIndicator, nextElo, close
+    upsertAttestation, deleteAttestation, deleteAttestationsForPair, attestationsForSubject,
+    getDerived, insertEventAndApply, isDerivedIndicator, nextElo,
+    upsertQuestion, questionsForSubject, questionExists, deleteQuestion,
+    upsertAnswer, answersForQuestion, deleteAnswer, close
 };

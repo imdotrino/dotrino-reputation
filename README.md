@@ -2,7 +2,8 @@
 
 > **Parte del ecosistema [Dotrino](https://dotrino.com).** Misión: aplicaciones que resuelven problemas comunes, respetando tu privacidad — sin anuncios, sin cookies, sin rastreo de datos, sin vender tu identidad a nadie.
 
-**Registro de reputación** del ecosistema Dotrino: `reputation.dotrino.com`.
+**Registro de reputación** del ecosistema Dotrino (backend **`rep.dotrino.com`**;
+la app pública vive en `reputation.dotrino.com`).
 **Quinto pilar**, complementario a identidad, transporte (proxy), almacenamiento
 (store) y descubrimiento (geo).
 
@@ -116,13 +117,54 @@ real entre emisor y sujeto; marca la atestación `txBound`. No reemplaza al
 anclaje de confianza (una granja de sybils puede co-firmarse recibos), pero da un
 conteo de interacciones reales y sube el costo del fraude.
 
-## API del servicio (HTTP/JSON)
+### Sujetos: cualquier cosa única, no solo perfiles (v0.6.0)
+
+El `subject` no tiene que ser un perfil (pubkey): puede ser un **dominio**, un
+**handle** de red o un **correo**. `subjectRef` lo normaliza a una cadena canónica
+estable — misma cosa ⇒ mismo `subject_id` — para que todos apunten a la misma fila.
+
+```js
+import { subjectRef, detectSubjectType } from '@dotrino/reputation'
+await subjectRef('domain', 'https://www.Example.com/') // → 'domain:example.com'
+await subjectRef('x', '@dotrino')                       // → 'x:dotrino'
+await subjectRef('email', 'Foo@Example.com')            // → 'email:<sha256>' (nunca en claro)
+// el perfil va como su JWK tal cual (compat con las calificaciones existentes)
+detectSubjectType('github.com/imdotrino')               // → 'github'
+```
+
+Sólo el **emisor** debe ser una pubkey (firma). El peso anti-sybil se ancla en tu
+confianza en los EMISORES, así que `aggregateTrust`/`reputationOf` funcionan igual
+sea el sujeto un perfil, un dominio o un handle.
+
+### Preguntas y respuestas ordenadas por reputación (v0.6.0)
+
+Cualquiera adjunta **preguntas** a un sujeto y cualquier perfil las **responde**
+(una respuesta por perfil). `rankQuestions` ordena por la **credibilidad sumada de
+quienes responden**: una respuesta de reputación real en tu web-of-trust pesa más
+que millones de desconocidos (reusa el mismo motor `credibility` que las calificaciones).
+
+```js
+const rep = createVaultReputation(identity)
+const subject = await subjectRef('domain', 'tienda.com')
+const { questionId } = await rep.postQuestion(subject, '¿Es confiable?')
+await rep.answer(questionId, 'Sí, compré y llegó')
+const ranked = await rep.rankQuestions(subject)
+// ranked[i] = { question, weight, weightedAnswerers, rawAnswerCount, answers[] }
+```
+
+## API del servicio (HTTP/JSON, backend `rep.dotrino.com`)
 
 | Método | Ruta | Auth | Descripción |
 |--------|------|------|-------------|
-| `PUT` | `/ratings` | sobre firmado por el emisor | publica/reemplaza una atestación |
-| `DELETE` | `/ratings` | sobre firmado | retira la atestación del emisor |
-| `GET` | `/ratings?subject=<JWK>` | pública | atestaciones crudas sobre un sujeto |
+| `PUT` | `/ratings` | sobre firmado por el emisor | publica/reemplaza una atestación (`op:'rate'` por canal) |
+| `DELETE` | `/ratings` | sobre firmado | retira la atestación (con `channel` = un solo eje) |
+| `GET` | `/ratings?subject=<ref>` | pública | atestaciones crudas sobre un sujeto |
+| `PUT` | `/questions` | sobre firmado | publica una pregunta → `{ questionId }` |
+| `DELETE` | `/questions` | sobre firmado | retira la propia pregunta |
+| `GET` | `/questions?subject=<ref>` | pública | preguntas crudas de un sujeto |
+| `PUT` | `/answers` | sobre firmado | publica/reemplaza la propia respuesta |
+| `DELETE` | `/answers` | sobre firmado | retira la propia respuesta |
+| `GET` | `/answers?question=<id>` | pública | respuestas crudas a una pregunta |
 | `GET` | `/health` | — | liveness |
 
 Ver [`server/`](./server) y [`DEPLOY.md`](./DEPLOY.md). **Independiente de geo**:

@@ -52,9 +52,10 @@ test('rate() guarda local Y publica atestación firmada al registro', async () =
   assert.strictEqual(res.ok, true)
   assert.strictEqual(sink.length, 1)            // setRating local
   assert.strictEqual(sink[0].rating, 5)
-  assert.strictEqual(puts.length, 1)            // PUT al registro
-  assert.strictEqual(puts[0].data.op, 'rating')
-  assert.strictEqual(puts[0].data.rating, 5)
+  assert.strictEqual(puts.length, 1)            // PUT al registro (un canal: confianza)
+  assert.strictEqual(puts[0].data.op, 'rate')   // modelo por-canal (no el legacy 'rating')
+  assert.strictEqual(puts[0].data.channel, 'confianza')
+  assert.strictEqual(puts[0].data.value, 5)
   assert.ok(puts[0].signature)                  // firmado por el vault
 })
 

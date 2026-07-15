@@ -48,6 +48,9 @@ function samePubkey(a, b) {
     catch (_) { return a === b; }
 }
 
+// sha256 hex de una cadena (id determinista de pregunta/respuesta, etc.).
+function sha256hex(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }
+
 /**
  * Valida un recibo co-firmado de transacción: { a, b, ts, sigA, sigB }, donde
  * sigA firma {op:'receipt',a,b,ts} con la clave a, y sigB con la clave b.
@@ -65,4 +68,4 @@ function verifyReceipt(receipt, issuer, subject) {
     return verifySignature(payload, sigA, a) && verifySignature(payload, sigB, b);
 }
 
-module.exports = { verifySignature, canonicalStringify, pubkeyId, samePubkey, verifyReceipt };
+module.exports = { verifySignature, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex };

@@ -1,6 +1,6 @@
 /**
- * @dotrino/reputation — cliente del registro de reputación
- * `reputation.dotrino.com`. Quinto pilar del ecosistema.
+ * @dotrino/reputation — cliente del registro de reputación del ecosistema
+ * (backend `rep.dotrino.com`). Quinto pilar del ecosistema.
  *
  * MODELO (ver discusión de diseño):
  *  - El registro es un **tablón público de atestaciones FIRMADAS**, no un juez.
@@ -19,16 +19,22 @@
  */
 
 import { canonicalStringify } from './canonical.js'
+import { isJwk } from './subject.js'
 
 export { canonicalStringify } from './canonical.js'
+export {
+  subjectRef, parseSubjectRef, detectSubjectType, sha256hex, isJwk, SUBJECT_TYPES
+} from './subject.js'
 
-const DEFAULT_BASE = 'https://reputation.dotrino.com'
+// El backend del pilar vive en `rep.dotrino.com` (la web pública del pilar es
+// `reputation.dotrino.com`). Un nodo autohospedado pasa su propio `baseUrl`.
+const DEFAULT_BASE = 'https://rep.dotrino.com'
 
 /**
  * @param {object} opts
  * @param {(data:object)=>Promise<string>} opts.signData   firma canónica → base64 (del vault)
  * @param {()=>Promise<string>} opts.getPublicKeyJwk        pubkey JWK string (del vault) = mi issuer
- * @param {string} [opts.baseUrl]                           default https://reputation.dotrino.com
+ * @param {string} [opts.baseUrl]                           default https://rep.dotrino.com
  * @param {typeof fetch} [opts.fetch]
  */
 export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = DEFAULT_BASE, fetch: f } = {}) {
@@ -54,7 +60,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    * @returns {Promise<{ok:true, txBound:boolean}>}
    */
   async function publishRating ({ subject, indicators, rating, notes, receipt, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido (pubkey JWK)')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     const map = normalizeIndicators(indicators, rating)
     if (!Object.keys(map).length) throw new Error('indicators requerido (mapa indicador→0..5)')
     const issuer = await getPublicKeyJwk()
@@ -157,35 +163,9 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     } = cfg
     if (typeof trustOf !== 'function') throw new Error('aggregateTrust: trustOf es requerido')
 
-    const credCache = new Map() // issuerId -> credibility
-
-    // Credibilidad de la OPINIÓN de `pk` para mí, en [0,1].
-    async function credibility (pk, depth, visited) {
-      const id = pubkeyId(pk)
-      if (credCache.has(id)) return credCache.get(id)
-      if (myPubkey && samePubkey(pk, myPubkey)) { credCache.set(id, 1); return 1 }
-      const direct = await trustOf(pk)
-      if (direct != null && direct > 0) { credCache.set(id, direct); return direct }
-      if (depth >= maxDepth) { credCache.set(id, 0); return 0 }
-      // Transitiva: ¿quién, de los que YO podría rastrear, avala a pk?
-      let best = 0
-      let atts = []
-      try { atts = await fetchRatings(pk) } catch (_) { atts = [] }
-      for (const a of atts) {
-        if (!a || typeof a.issuer !== 'string') continue
-        const iid = pubkeyId(a.issuer)
-        if (iid === id || visited.has(iid)) continue
-        const cIssuer = await credibility(a.issuer, depth + 1, new Set(visited).add(iid))
-        if (cIssuer <= 0) continue
-        // La credibilidad transitiva se ancla SIEMPRE en confianza (el ancla anti-sybil).
-        const conf = attConfianza(a)
-        const contribution = cIssuer * clamp01((conf ?? 0) / 5)
-        if (contribution > best) best = contribution
-      }
-      const v = decay * best
-      credCache.set(id, v)
-      return v
-    }
+    // Credibilidad transitiva de la OPINIÓN de `pk` para mí, anclada en el
+    // observador (fábrica compartida con credibilityOf/rankQuestions).
+    const credibility = makeCredibility({ trustOf, fetchRatings, myPubkey, maxDepth, decay })
 
     let atts = []
     try { atts = await fetchRatings(subject) } catch (_) { atts = [] }
@@ -234,7 +214,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Publica MI atestación de UN indicador (canal) sobre `subject`: un registro
    *  independiente firmado {op:'rate', subject, issuer, channel, value, ts}. */
   async function rate ({ subject, channel, value, notes, receipt, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido (pubkey JWK)')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
     if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('value debe ser entero 0..5')
     const issuer = await getPublicKeyJwk()
@@ -270,7 +250,189 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     } catch (_) { return null }
   }
 
-  return { publishRating, rate, removeRating, getRatings, aggregateTrust, reportEvent, getDerived }
+  // ── Credibilidad standalone (para ordenar listas por reputación) ───
+  /**
+   * Credibilidad de la opinión de `pk` para MÍ, en [0,1] — el mismo peso
+   * anti-sybil que usa aggregateTrust, pero expuesto para ordenar listas
+   * (respuestas, aportes) por reputación anclada en tu red.
+   */
+  async function credibilityOf (pk, cfg = {}) {
+    const {
+      trustOf,
+      fetchRatings = async p => (await getRatings(p)).attestations,
+      myPubkey = null, maxDepth = 2, decay = 0.5
+    } = cfg
+    const credibility = makeCredibility({ trustOf, fetchRatings, myPubkey, maxDepth, decay })
+    return credibility(pk, 1, new Set())
+  }
+
+  // ── Preguntas y respuestas sobre un sujeto ─────────────────────────
+  const questionsCache = new Map()   // subject -> { ts, value?|error? }
+  const questionsInflight = new Map()
+  const answersCache = new Map()     // questionId -> { ts, value?|error? }
+  const answersInflight = new Map()
+
+  // Mismo patrón cache+dedup que getRatings, parametrizado por store.
+  function memoGet (cache, inflight, key, urlBuilder) {
+    const cached = cache.get(key)
+    if (cached) {
+      const ttl = cached.error ? RATINGS_NEG_TTL : RATINGS_TTL
+      if (Date.now() - cached.ts < ttl) return cached.error ? Promise.reject(cached.error) : Promise.resolve(cached.value)
+    }
+    const pending = inflight.get(key)
+    if (pending) return pending
+    const p = Promise.resolve()
+      .then(() => doFetch(urlBuilder()))
+      .then(r => handle(r))
+      .then(
+        value => { cache.set(key, { ts: Date.now(), value }); return value },
+        error => { cache.set(key, { ts: Date.now(), error }); throw error }
+      )
+      .finally(() => { inflight.delete(key) })
+    inflight.set(key, p)
+    return p
+  }
+
+  /** Publica MI pregunta sobre `subject` (firmada). → { ok, questionId }. */
+  async function postQuestion ({ subject, text, now } = {}) {
+    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
+    const t = String(text ?? '').trim()
+    if (!t) throw new Error('text requerido')
+    if (t.length > 280) throw new Error('text máximo 280')
+    const issuer = await getPublicKeyJwk()
+    const data = { op: 'question', subject, issuer, text: t, ts: now ?? Date.now() }
+    const signature = await signData(data)
+    questionsCache.delete(subject)
+    return handle(await doFetch(`${base}/questions`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+    }))
+  }
+
+  /** Publica/reemplaza MI respuesta a una pregunta (una por perfil). → { ok }. */
+  async function postAnswer ({ questionId, text, now } = {}) {
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    const t = String(text ?? '').trim()
+    if (!t) throw new Error('text requerido')
+    if (t.length > 280) throw new Error('text máximo 280')
+    const issuer = await getPublicKeyJwk()
+    const data = { op: 'answer', questionId, issuer, text: t, ts: now ?? Date.now() }
+    const signature = await signData(data)
+    answersCache.delete(questionId)
+    return handle(await doFetch(`${base}/answers`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+    }))
+  }
+
+  /** Preguntas crudas sobre un sujeto (memoizada). → { questions: [...] }. */
+  function getQuestions (subject) {
+    if (typeof subject !== 'string' || !subject) return Promise.reject(new Error('subject requerido'))
+    return memoGet(questionsCache, questionsInflight, subject,
+      () => `${base}/questions?${new URLSearchParams({ subject }).toString()}`)
+  }
+
+  /** Respuestas crudas a una pregunta (memoizada). → { answers: [...] }. */
+  function getAnswers (questionId) {
+    if (typeof questionId !== 'string' || !questionId) return Promise.reject(new Error('questionId requerido'))
+    return memoGet(answersCache, answersInflight, questionId,
+      () => `${base}/answers?${new URLSearchParams({ question: questionId }).toString()}`)
+  }
+
+  /** Retira MI pregunta (tombstone firmado; sólo el autor). */
+  async function removeQuestion ({ questionId, subject, now } = {}) {
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    const issuer = await getPublicKeyJwk()
+    const data = { op: 'delquestion', questionId, issuer, ts: now ?? Date.now() }
+    const signature = await signData(data)
+    if (subject) questionsCache.delete(subject)
+    answersCache.delete(questionId)
+    return handle(await doFetch(`${base}/questions`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+    }))
+  }
+
+  /** Retira MI respuesta a una pregunta (tombstone firmado). */
+  async function removeAnswer ({ questionId, now } = {}) {
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    const issuer = await getPublicKeyJwk()
+    const data = { op: 'delanswer', questionId, issuer, ts: now ?? Date.now() }
+    const signature = await signData(data)
+    answersCache.delete(questionId)
+    return handle(await doFetch(`${base}/answers`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+    }))
+  }
+
+  /**
+   * Ordena las preguntas de un sujeto por la CREDIBILIDAD SUMADA de quienes las
+   * responden (anti-sybil, anclado en tu red): una respuesta de reputación real
+   * en tu web-of-trust pesa más que millones de desconocidos. Reusa un solo
+   * motor de credibilidad (cache compartido) para todas las preguntas.
+   *
+   * @returns {Promise<Array<{ question, weight, weightedAnswerers, rawAnswerCount, answers }>>}
+   */
+  async function rankQuestions (subject, cfg = {}) {
+    const {
+      trustOf,
+      fetchRatings = async p => (await getRatings(p)).attestations,
+      myPubkey = null, maxDepth = 2, decay = 0.5, minCredibility = 0.05
+    } = cfg
+    const credibility = makeCredibility({ trustOf, fetchRatings, myPubkey, maxDepth, decay })
+    const { questions } = await getQuestions(subject)
+    const out = []
+    for (const q of (questions || [])) {
+      let answers = []
+      try { answers = (await getAnswers(q.questionId)).answers || [] } catch (_) { answers = [] }
+      // Una respuesta por emisor (dedup); quedarse con la más reciente.
+      const byAnswerer = new Map()
+      for (const a of answers) {
+        if (!a || typeof a.issuer !== 'string') continue
+        const id = pubkeyId(a.issuer)
+        const prev = byAnswerer.get(id)
+        if (!prev || (a.ts || 0) > (prev.ts || 0)) byAnswerer.set(id, a)
+      }
+      let weight = 0
+      let weightedAnswerers = 0
+      const scored = []
+      for (const a of byAnswerer.values()) {
+        const cred = await credibility(a.issuer, 1, new Set())
+        weight += cred
+        if (cred >= minCredibility) weightedAnswerers++
+        scored.push({ ...a, credibility: round3(cred) })
+      }
+      scored.sort((x, y) => y.credibility - x.credibility)
+      out.push({
+        question: q,
+        weight: round3(weight),
+        weightedAnswerers,
+        rawAnswerCount: byAnswerer.size,
+        answers: scored
+      })
+    }
+    out.sort((x, y) =>
+      (y.weight - x.weight) ||
+      (y.rawAnswerCount - x.rawAnswerCount) ||
+      ((y.question.ts || 0) - (x.question.ts || 0)))
+    return out
+  }
+
+  /** Retira MI atestación de UN canal (des-calificar un eje). */
+  async function removeChannel ({ subject, channel, now } = {}) {
+    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
+    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
+    const issuer = await getPublicKeyJwk()
+    const data = { op: 'unrate', subject, issuer, channel, ts: now ?? Date.now() }
+    const signature = await signData(data)
+    ratingsCache.delete(subject)
+    return handle(await doFetch(`${base}/ratings`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+    }))
+  }
+
+  return {
+    publishRating, rate, removeRating, removeChannel, getRatings, aggregateTrust,
+    credibilityOf, reportEvent, getDerived,
+    postQuestion, postAnswer, getQuestions, getAnswers, removeQuestion, removeAnswer, rankQuestions
+  }
 }
 
 // Normaliza la entrada de indicadores: mapa {nombre:0..5} y/o `rating` (=confianza).
@@ -300,6 +462,50 @@ function attIndicators (a) {
 function attConfianza (a) {
   const ind = attIndicators(a)
   return typeof ind.confianza === 'number' ? ind.confianza : null
+}
+
+/**
+ * Fábrica de la función de CREDIBILIDAD transitiva anclada en el observador.
+ * La comparten `aggregateTrust`, `credibilityOf` y `rankQuestions`, para que el
+ * mismo motor anti-sybil ("1 de tu red > millones de desconocidos") pondere
+ * tanto valores de calificación como conteos de respuestas.
+ *
+ * Devuelve `credibility(pk, depth=1, visited=Set)` → [0,1], con su propio cache.
+ * Un emisor con confianza directa `trustOf(pk)>0` vale eso; si no, se camina el
+ * grafo (quién, de tu red, avala a pk), anclado SIEMPRE en `confianza`, con
+ * decaimiento por salto y tope `maxDepth`; por debajo de eso vale 0.
+ */
+function makeCredibility ({ trustOf, fetchRatings, myPubkey = null, maxDepth = 2, decay = 0.5 }) {
+  if (typeof trustOf !== 'function') throw new Error('makeCredibility: trustOf es requerido')
+  if (typeof fetchRatings !== 'function') throw new Error('makeCredibility: fetchRatings es requerido')
+  const credCache = new Map() // issuerId -> credibility
+  async function credibility (pk, depth = 1, visited = new Set()) {
+    const id = pubkeyId(pk)
+    if (credCache.has(id)) return credCache.get(id)
+    if (myPubkey && samePubkey(pk, myPubkey)) { credCache.set(id, 1); return 1 }
+    const direct = await trustOf(pk)
+    if (direct != null && direct > 0) { credCache.set(id, direct); return direct }
+    if (depth >= maxDepth) { credCache.set(id, 0); return 0 }
+    // Transitiva: ¿quién, de los que YO podría rastrear, avala a pk?
+    let best = 0
+    let atts = []
+    try { atts = await fetchRatings(pk) } catch (_) { atts = [] }
+    for (const a of atts) {
+      if (!a || typeof a.issuer !== 'string') continue
+      const iid = pubkeyId(a.issuer)
+      if (iid === id || visited.has(iid)) continue
+      const cIssuer = await credibility(a.issuer, depth + 1, new Set(visited).add(iid))
+      if (cIssuer <= 0) continue
+      // La credibilidad transitiva se ancla SIEMPRE en confianza (el ancla anti-sybil).
+      const conf = attConfianza(a)
+      const contribution = cIssuer * clamp01((conf ?? 0) / 5)
+      if (contribution > best) best = contribution
+    }
+    const v = decay * best
+    credCache.set(id, v)
+    return v
+  }
+  return credibility
 }
 
 /**
@@ -356,8 +562,10 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
     const indicators = typeof valueOrIndicators === 'number'
       ? { confianza: valueOrIndicators }
       : (valueOrIndicators || {})
-    // El vault local solo guarda confianza (es el eje del web-of-trust / trustOf).
-    if (typeof indicators.confianza === 'number') {
+    // El vault local solo guarda confianza (es el eje del web-of-trust / trustOf),
+    // y SÓLO para perfiles: `trustOf` pondera emisores, que siempre son perfiles;
+    // un dominio/handle no debe entrar al libro de peers local.
+    if (isJwk(subject) && typeof indicators.confianza === 'number') {
       try { if (typeof identity.setRating === 'function') await identity.setRating(subject, indicators.confianza, notes) } catch (_) {}
     }
     // Modelo nuevo: cada indicador = un registro independiente (op 'rate' por canal).
@@ -386,11 +594,25 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   }
   function reportResult (coSigned) { return client.reportEvent(coSigned) }
 
+  // Preguntas/respuestas + credibilidad, pre-cableados con MI web-of-trust.
+  function credibilityOf (pk, opts = {}) { return client.credibilityOf(pk, { trustOf, myPubkey: myPubkey(), ...opts }) }
+  function postQuestion (subject, text) { return client.postQuestion({ subject, text }) }
+  function answer (questionId, text) { return client.postAnswer({ questionId, text }) }
+  function getQuestions (subject) { return client.getQuestions(subject) }
+  function getAnswers (questionId) { return client.getAnswers(questionId) }
+  function rankQuestions (subject, opts = {}) { return client.rankQuestions(subject, { trustOf, myPubkey: myPubkey(), ...opts }) }
+  function removeQuestion (questionId, subject) { return client.removeQuestion({ questionId, subject }) }
+  function removeAnswer (questionId) { return client.removeAnswer({ questionId }) }
+  function removeChannel (subject, channel) { return client.removeChannel({ subject, channel }) }
+
   return {
     client, trustOf, rate, reputationOf,
     getRatings: client.getRatings,
     removeRating: client.removeRating,
-    rateChannel, eloOf, derivedOf, reportResult
+    removeChannel,
+    rateChannel, eloOf, derivedOf, reportResult,
+    credibilityOf, postQuestion, answer, getQuestions, getAnswers, rankQuestions,
+    removeQuestion, removeAnswer
   }
 }
 
