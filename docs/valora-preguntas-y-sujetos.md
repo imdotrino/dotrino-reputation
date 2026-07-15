@@ -1,8 +1,10 @@
-# Valora — calificar y preguntar sobre cualquier sujeto único (diseño)
+# Reputation — calificar y preguntar sobre cualquier sujeto único (diseño)
 
-> Estado: **diseño aprobado 2026-07-15**, sin implementar. Fuente única de esta
-> feature. Complementa [`federacion-confianza.md`](./federacion-confianza.md)
-> (verificación/prueba de control, que aquí se **difiere**).
+> Estado 2026-07-15: **Fase 1 (paquete 0.6.0) y Fase 2 (servidor) HECHAS y
+> desplegadas**; el **frontend (Fase 3) sigue pendiente**. La app se llama
+> **`reputation`** (`reputation.dotrino.com`); por eso el backend se renombró a
+> **`rep.dotrino.com`**. Fuente única de esta feature. Complementa
+> [`federacion-confianza.md`](./federacion-confianza.md) (prueba de control, **Fase 4**).
 
 ## Objetivo
 
@@ -152,7 +154,7 @@ vacío/baja confianza — inherente, no un bug; la UI maneja el caso `null`/déb
 
 ## Frontend (app nueva)
 
-App Vite standalone (nombre propuesto: **`valora`** → `valora.dotrino.com`) que:
+App Vite standalone (**`reputation`** → `reputation.dotrino.com`, backend `rep.dotrino.com`) que:
 
 - Reusa las singletons de servicio de `dotrino-eco` (`identity`/`reputation`/`store`) y
   el `<dotrino-topbar profile>` de `dotrino-terminal`. Pinea versiones **actuales**
@@ -193,14 +195,17 @@ catálogo (`dotrino-home/src/data/apps.ts`).
 
 ## Fases
 
-1. **Paquete `@dotrino/reputation`** (minor): `subjectRef`/`parseSubjectRef`,
-   `credibilityOf` exportado, `postQuestion/postAnswer/getQuestions/getAnswers/
-   rankQuestions`, aflojar copy pubkey-only. Publicar tras commit+tag.
-2. **Servidor de reputación**: tablas `questions`/`answers` + ops + GET, DELETE de
-   attestations, guarda de `ts` monótono. Migración idempotente. Deploy al VPS de la BD
-   (74.208.11.221) + restart.
-3. **App `valora`**: repo nuevo, Vite, SubjectCard + `<dotrino-profile>`, lista de
-   preguntas ordenada, store. Deploy Pages + alta en catálogo.
-4. **Diferido**: prueba de control (`op:'verify'` + Worker verificador) para "reclamar"
-   dominios/handles y responder con autoridad — cuando se decida. Base ya diseñada en
+1. ✅ **HECHA — Paquete `@dotrino/reputation` 0.6.0** (publicado): `subjectRef`/
+   `parseSubjectRef`/`detectSubjectType`, `credibilityOf` exportado,
+   `postQuestion/postAnswer/getQuestions/getAnswers/rankQuestions`, `removeChannel`,
+   `DEFAULT_BASE=rep.dotrino.com`. 27 tests.
+2. ✅ **HECHA — Servidor** (en vivo en `rep.dotrino.com`): tablas `questions`/`answers`
+   + ops firmadas + GET, DELETE de attestations por canal, guarda `ts` monótono en
+   answers. Migración idempotente (corre al arrancar). Producción = node+pm2+nginx en
+   el VPS 74.208.11.221 (no el docker-compose del repo); vhost `rep` + cert añadidos.
+3. ⏳ **Pendiente — App `reputation`**: repo nuevo, Vite, SubjectCard + `<dotrino-profile>`,
+   lista de preguntas ordenada, store. Deploy Pages (reputation.dotrino.com) + catálogo.
+   Antes o en paralelo: **bumpear los consumidores** de `@dotrino/reputation` a 0.6.0.
+4. ⏳ **Diferido — prueba de control** (`op:'verify'` + Worker verificador) para
+   "reclamar" dominios/handles y responder con autoridad. Base en
    `federacion-confianza.md` y `@dotrino/verifier`.
