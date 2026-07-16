@@ -176,7 +176,11 @@ export interface VaultReputation {
 
 /** Instancia conectada de @dotrino/identity (duck-typed). */
 export interface VaultIdentity {
-  me?: { publickey?: string }
+  // `| null` no es cosmético: @dotrino/identity declara `me: Me | null` (sin vault
+  // conectado no hay `me`). Sin el null, NINGUNA app en TypeScript podía pasar una
+  // Identity real a createVaultReputation sin un error de tipos — el runtime
+  // siempre estuvo bien (todo el paquete lee `me` con guardas), mentía el tipo.
+  me?: { publickey?: string } | null
   signData (data: object): Promise<{ signature: string; publickey: string } | string>
   getRatingsForSubject (pk: string): Promise<{ mine?: { rating?: number } | null; endorsements?: unknown[] }>
   setRating? (pk: string, rating: number, notes?: string): Promise<unknown>
