@@ -48,9 +48,8 @@ test('parseSubjectRef: tipos y opacidad del email', () => {
   assert.strictEqual(parseSubjectRef('weird').type, 'unknown')
 })
 
-test('detectSubjectType: adivina el tipo desde texto pegado', () => {
+test('detectSubjectType: deduce el tipo cuando el texto es inequívoco', () => {
   assert.strictEqual(detectSubjectType('foo@bar.com'), 'email')
-  assert.strictEqual(detectSubjectType('@dotrino'), 'x')
   assert.strictEqual(detectSubjectType('https://x.com/dotrino'), 'x')
   assert.strictEqual(detectSubjectType('github.com/imdotrino'), 'github')
   assert.strictEqual(detectSubjectType('linkedin.com/company/dotrino'), 'linkedin')
@@ -58,4 +57,15 @@ test('detectSubjectType: adivina el tipo desde texto pegado', () => {
   assert.strictEqual(detectSubjectType('https://example.com/x'), 'domain')
   assert.strictEqual(detectSubjectType(jwk), 'profile')
   assert.strictEqual(detectSubjectType('   '), null)
+})
+
+test('detectSubjectType: un handle pelado es AMBIGUO → null, no se asume X', () => {
+  // '@juan' puede ser de X, LinkedIn o GitHub: sujetos distintos, seguramente
+  // personas distintas. Antes devolvía 'x' y calificabas a quien no era.
+  assert.strictEqual(detectSubjectType('@dotrino'), null)
+  assert.strictEqual(detectSubjectType('dotrino'), null)
+  // El dominio del servicio SÍ es un sitio, no una cuenta (no lleva barra).
+  assert.strictEqual(detectSubjectType('linkedin.com'), 'domain')
+  // Con la URL no hay duda: ahí sí resuelve la red.
+  assert.strictEqual(detectSubjectType('linkedin.com/in/dotrino'), 'linkedin')
 })

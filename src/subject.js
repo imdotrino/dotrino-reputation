@@ -130,8 +130,18 @@ export function parseSubjectRef (ref) {
 }
 
 /**
- * Adivina el tipo de sujeto desde un texto pegado por el usuario (para el input
- * de "añadir sujeto"). Devuelve un tipo de SUBJECT_TYPES o null si no reconoce.
+ * Deduce el tipo de sujeto desde un texto pegado por el usuario, SOLO cuando el
+ * texto lo dice sin ambigüedad (un JWK, un correo, una URL del servicio, un
+ * dominio). Devuelve un tipo de SUBJECT_TYPES, o null si no lo reconoce **o si
+ * hay más de una lectura posible**.
+ *
+ * Un handle pelado ('@juan') es AMBIGUO a propósito: puede ser de X, de LinkedIn
+ * o de GitHub, y cada uno es un sujeto distinto — probablemente una persona
+ * distinta. Antes se asumía X en silencio, así que quien escribía '@juan'
+ * pensando en LinkedIn calificaba a otro. Ahora devuelve null: que la app
+ * pregunte de qué red es (un selector de tipo) en vez de adivinar.
+ *
+ * @returns {string|null} tipo inequívoco, o null si hay que preguntar
  */
 export function detectSubjectType (input) {
   const s = String(input || '').trim()
@@ -141,7 +151,6 @@ export function detectSubjectType (input) {
   if (/linkedin\.com\//i.test(s)) return 'linkedin'
   if (/(?:\/\/|^)(?:www\.)?github\.com\//i.test(s)) return 'github'
   if (/(?:\/\/|^)(?:www\.)?(?:x|twitter)\.com\//i.test(s)) return 'x'
-  if (/^@[a-z0-9_]{1,15}$/i.test(s)) return 'x'
   if (isDomain(normDomain(s))) return 'domain'
   return null
 }

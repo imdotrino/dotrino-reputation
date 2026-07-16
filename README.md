@@ -153,7 +153,16 @@ await subjectRef('x', '@dotrino')                       // → 'x:dotrino'
 await subjectRef('email', 'Foo@Example.com')            // → 'email:<sha256>' (nunca en claro)
 // el perfil va como su JWK tal cual (compat con las calificaciones existentes)
 detectSubjectType('github.com/imdotrino')               // → 'github'
+detectSubjectType('@dotrino')                           // → null: ¿de qué red? (v0.8.0)
 ```
+
+`detectSubjectType` sólo resuelve lo **inequívoco** (un JWK, un correo, una URL del
+servicio, un dominio). Un **handle pelado** (`@juan`) devuelve **`null`** a
+propósito: puede ser de X, de LinkedIn o de GitHub — sujetos distintos, y casi
+seguro personas distintas. Hasta la 0.7 se asumía X en silencio, así que quien
+escribía `@juan` pensando en LinkedIn terminaba calificando a otro. Si te da
+`null`, **pregunta de qué red es** (un selector de tipo) y llama a
+`subjectRef(tipo, valor)`, que acepta el handle con o sin `@`, o la URL.
 
 Sólo el **emisor** debe ser una pubkey (firma). El peso anti-sybil se ancla en tu
 confianza en los EMISORES, así que `aggregateTrust`/`reputationOf` funcionan igual
