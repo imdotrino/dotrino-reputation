@@ -103,11 +103,34 @@ const rep = createVaultReputation(identity)   // identity = vault conectado
 
 await rep.rate(peerPubkey, 5, { notes: 'buen trato' })  // guarda local + atesta firmado
 const r = await rep.reputationOf(peerPubkey)             // ponderado por MI web-of-trust → badge
+const mine = await rep.myIndicatorsFor(peerPubkey)       // { confianza: 5, afinidad: 4 } → repoblar MIS controles
 ```
 
 `identity` debe exponer `me.publickey`, `signData` y `getRatingsForSubject`
 (la instancia de `@dotrino/identity`). El paquete no depende de
 identity: se la inyectás.
+
+#### Releer lo que YO califiqué: `myIndicatorsFor` (v0.7.0)
+
+Cada eje es una **atestación independiente** (un registro firmado por canal), así
+que las atestaciones que devuelve `getRatings` traen un `indicators` de **una sola
+clave**. Releer lo tuyo con `find` te da **un solo eje** y los demás aparecen en 0:
+
+```js
+// ❌ MAL: `mine.indicators` es { confianza: 5 } — afinidad y conoce se pierden
+const mine = attestations.find(a => a.issuer === myPubkey)
+
+// ✅ BIEN: fusiona todas mis atestaciones (y compara con samePubkey)
+const ind = await rep.myIndicatorsFor(subject)          // { confianza: 5, afinidad: 5, conoce: 5 }
+// o, si ya tenés las atestaciones a mano:
+import { myIndicators } from '@dotrino/reputation'
+const ind2 = myIndicators(attestations, myPubkey)
+```
+
+Ojo: los ejes de un mismo `rate()` se emiten en paralelo y **comparten `ts`**, y el
+servidor ordena por `ts DESC` — el empate hace que `find` devuelva un eje
+**arbitrario**. `myIndicators(attestations, issuer)` también sirve para agrupar las
+atestaciones de **otro** emisor (una fila por persona, no una por eje).
 
 ### Recibo de transacción (opcional, sube credibilidad)
 

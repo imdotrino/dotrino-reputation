@@ -150,6 +150,12 @@ export interface VaultReputation {
   removeChannel (subject: string, channel: string): Promise<{ ok: true }>
   /** Credibilidad de `pk` para MÍ en [0,1], pre-cableada con mi web-of-trust. */
   credibilityOf (pk: string, opts?: Partial<AggregateConfig>): Promise<number>
+  /**
+   * MIS indicadores sobre `subject`, ya fusionados → { confianza: 5, afinidad: 5 }.
+   * Para repoblar mis propios controles al abrir/recargar. Preferilo a leer
+   * `getRatings(...).attestations` a mano: cada atestación trae UN solo eje.
+   */
+  myIndicatorsFor (subject: string): Promise<Record<string, number>>
   /** Publica mi pregunta sobre un sujeto. */
   postQuestion (subject: string, text: string): Promise<{ ok: true; questionId: string }>
   /** Responde una pregunta (una respuesta por perfil). */
@@ -180,6 +186,12 @@ export function createReputationClient (opts: ReputationClientOptions): Reputati
 export function createVaultReputation (identity: VaultIdentity, opts?: { baseUrl?: string; fetch?: typeof fetch }): VaultReputation
 export function samePubkey (a: string, b: string): boolean
 export function pubkeyId (jwkString: string): string
+/**
+ * MIS indicadores sobre un sujeto, fusionados desde sus atestaciones. El
+ * registro guarda UNA atestación por eje, así que `attestations.find(...)`
+ * devuelve un solo eje y pierde el resto. Compara emisores con `samePubkey`.
+ */
+export function myIndicators (attestations: Attestation[], me: string): Record<string, number>
 export function canonicalStringify (value: unknown): string
 
 // ── Sujetos canónicos ──────────────────────────────────────────────

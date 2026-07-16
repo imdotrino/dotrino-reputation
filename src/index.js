@@ -465,6 +465,36 @@ function attConfianza (a) {
 }
 
 /**
+ * MIS indicadores sobre un sujeto, FUSIONADOS a partir de sus atestaciones.
+ *
+ * El registro guarda UNA atestación por eje (`rate` emite un registro firmado
+ * por canal, y el servidor explota también los paquetes legacy al leer), así que
+ * cada atestación trae un `indicators` de UNA sola clave. Quedarse con la
+ * primera (`attestations.find(a => a.issuer === me)`) devuelve un solo eje y
+ * pierde el resto — de ahí este helper: es la ÚNICA forma correcta de releer lo
+ * que yo califiqué, y evita que cada app rehaga la fusión a mano.
+ *
+ * Compara el emisor con `samePubkey` (un JWK serializado no es canónico: el
+ * orden de claves no está garantizado y una respuesta puede mezclar las
+ * serializaciones de la tabla nueva y la legacy).
+ *
+ * @param {Array} attestations  las de `getRatings(subject).attestations`
+ * @param {string} me  mi pubkey (JWK serializado)
+ * @returns {Record<string, number>} p.ej. { confianza: 5, afinidad: 5 } — {} si no califiqué
+ */
+export function myIndicators (attestations, me) {
+  if (!Array.isArray(attestations) || !me) return {}
+  const out = {}
+  for (const a of attestations) {
+    if (!a || typeof a.issuer !== 'string' || !samePubkey(a.issuer, me)) continue
+    for (const [k, v] of Object.entries(attIndicators(a))) {
+      if (typeof v === 'number') out[k] = v
+    }
+  }
+  return out
+}
+
+/**
  * Fábrica de la función de CREDIBILIDAD transitiva anclada en el observador.
  * La comparten `aggregateTrust`, `credibilityOf` y `rankQuestions`, para que el
  * mismo motor anti-sybil ("1 de tu red > millones de desconocidos") pondere
@@ -585,6 +615,19 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
     return client.aggregateTrust(subject, { trustOf, myPubkey: myPubkey(), ...opts })
   }
 
+  /**
+   * MIS indicadores sobre `subject`, ya fusionados → { confianza: 5, afinidad: 5 }.
+   * Para repoblar mis propios controles (estrellas) al abrir/recargar. Usalo en
+   * vez de leer `getRatings(...).attestations` a mano: cada atestación trae UN
+   * solo eje (ver `myIndicators`).
+   */
+  async function myIndicatorsFor (subject) {
+    const me = myPubkey()
+    if (!me) return {}
+    const { attestations } = await client.getRatings(subject)
+    return myIndicators(attestations, me)
+  }
+
   // ELO: consultar el de un jugador y publicar un resultado co-firmado.
   // Indicadores derivados. eloOf devuelve {elo,games} por compat con consumidores.
   async function derivedOf (player, indicator, scope) { return client.getDerived(player, indicator, scope) }
@@ -606,7 +649,7 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   function removeChannel (subject, channel) { return client.removeChannel({ subject, channel }) }
 
   return {
-    client, trustOf, rate, reputationOf,
+    client, trustOf, rate, reputationOf, myIndicatorsFor,
     getRatings: client.getRatings,
     removeRating: client.removeRating,
     removeChannel,
