@@ -555,7 +555,19 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   if (!identity || typeof identity.signData !== 'function') {
     throw new Error('dotrino-reputation: se requiere una instancia de identity conectada')
   }
-  const myPubkey = () => (identity.me && identity.me.publickey) || null
+  /**
+   * Quién califica. Con ACTA DE PERFIL, quien opina es la PERSONA —su `profileId`—, no el
+   * aparato desde el que lo hace: así una calificación tuya cuenta igual la hagas desde el
+   * PC o el celular, y tu reputación no se fragmenta en una por dispositivo.
+   * Sin acta (o si el perfil aún no existe), la pubkey de siempre.
+   */
+  const myPubkey = async () => {
+    try {
+      const m = await identity.myMembership?.()
+      if (m?.inProfile && m.profileId) return m.profileId
+    } catch (_) {}
+    return (identity.me && identity.me.publickey) || null
+  }
 
   const client = createReputationClient({
     signData: async data => {
@@ -563,7 +575,7 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
       return typeof res === 'string' ? res : res.signature
     },
     getPublicKeyJwk: async () => {
-      const pk = myPubkey()
+      const pk = await myPubkey()
       if (!pk) throw new Error('dotrino-reputation: el vault no tiene pubkey (¿conectado?)')
       return pk
     },
@@ -612,7 +624,7 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
 
   /** Reputación de un peer ponderada por MI web-of-trust (anti-sybil). Para el badge. */
   async function reputationOf (subject, opts = {}) {
-    return client.aggregateTrust(subject, { trustOf, myPubkey: myPubkey(), ...opts })
+    return client.aggregateTrust(subject, { trustOf, myPubkey: await myPubkey(), ...opts })
   }
 
   /**
@@ -622,7 +634,7 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
    * solo eje (ver `myIndicators`).
    */
   async function myIndicatorsFor (subject) {
-    const me = myPubkey()
+    const me = await myPubkey()
     if (!me) return {}
     const { attestations } = await client.getRatings(subject)
     return myIndicators(attestations, me)
@@ -638,12 +650,12 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   function reportResult (coSigned) { return client.reportEvent(coSigned) }
 
   // Preguntas/respuestas + credibilidad, pre-cableados con MI web-of-trust.
-  function credibilityOf (pk, opts = {}) { return client.credibilityOf(pk, { trustOf, myPubkey: myPubkey(), ...opts }) }
+  async function credibilityOf (pk, opts = {}) { return client.credibilityOf(pk, { trustOf, myPubkey: await myPubkey(), ...opts }) }
   function postQuestion (subject, text) { return client.postQuestion({ subject, text }) }
   function answer (questionId, text) { return client.postAnswer({ questionId, text }) }
   function getQuestions (subject) { return client.getQuestions(subject) }
   function getAnswers (questionId) { return client.getAnswers(questionId) }
-  function rankQuestions (subject, opts = {}) { return client.rankQuestions(subject, { trustOf, myPubkey: myPubkey(), ...opts }) }
+  async function rankQuestions (subject, opts = {}) { return client.rankQuestions(subject, { trustOf, myPubkey: await myPubkey(), ...opts }) }
   function removeQuestion (questionId, subject) { return client.removeQuestion({ questionId, subject }) }
   function removeAnswer (questionId) { return client.removeAnswer({ questionId }) }
   function removeChannel (subject, channel) { return client.removeChannel({ subject, channel }) }
