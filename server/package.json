@@ -1,6 +1,6 @@
 {
   "name": "dotrino-reputation-server",
-  "version": "0.10.0",
+  "version": "0.1.0",
   "description": "Servidor del registro de reputación reputation.dotrino.com (HTTP/JSON + Postgres)",
   "private": true,
   "type": "commonjs",
