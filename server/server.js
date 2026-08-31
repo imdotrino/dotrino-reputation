@@ -19,7 +19,7 @@
 
 const http = require('node:http');
 const db = require('./db.js');
-const { verifySignature, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex } = require('./signature.js');
+const { verifySignature, verifySignedBy, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex } = require('./signature.js');
 const rl = require('./rateLimiter.js');
 
 const PORT = Number(process.env.PORT || 8091);
@@ -82,7 +82,7 @@ function normalizeIndicators(indicators, rating) {
 }
 
 async function handlePut(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object') return send(res, 400, { error: 'falta data' });
     // Tipo "atestación" por CANAL independiente (modelo nuevo). Cada indicador es
     // su propio registro firmado: {op:'rate', subject, issuer, channel, value, ts}.
@@ -96,9 +96,11 @@ async function handlePut(req, res, now) {
     const indicators = normalizeIndicators(data.indicators, data.rating);
     if (!indicators) return send(res, 400, { error: 'indicador inválido (entero 0..5, nombre slug)' });
     if (!Object.keys(indicators).length) return send(res, 400, { error: 'indicators o rating requerido' });
-    // La atestación debe estar firmada por el EMISOR.
-    if (!verifySignature(data, signature, data.issuer))
-        return send(res, 401, { error: 'firma inválida' });
+    // La atestación la firma un APARATO, a nombre de una identidad. La cadena de
+    // selladores es lo que prueba que ese aparato habla por esa identidad; sin ella no se
+    // acepta, porque creerle el `issuer` a quien lo escribe es no comprobar nada.
+    if (!await verifySignedBy(data, signature, signer, chain))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(data.ts, now))
         return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
 
@@ -127,13 +129,13 @@ async function handlePut(req, res, now) {
 }
 
 async function handleDelete(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object') return send(res, 400, { error: 'falta data' });
     if (data.op !== 'unrate') return send(res, 400, { error: 'op debe ser "unrate"' });
     if (typeof data.issuer !== 'string' || typeof data.subject !== 'string')
         return send(res, 400, { error: 'issuer y subject requeridos' });
-    if (!verifySignature(data, signature, data.issuer))
-        return send(res, 401, { error: 'firma inválida' });
+    if (!await verifySignedBy(data, signature, signer, chain))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(data.ts, now)) return send(res, 401, { error: 'sobre vencido' });
     const issuerId = pubkeyId(data.issuer), subjectId = pubkeyId(data.subject);
     if (typeof data.channel === 'string' && data.channel) {

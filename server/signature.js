@@ -33,6 +33,38 @@ function verifySignature(data, signatureB64, signerJwkString) {
     } catch (_) { return false; }
 }
 
+/**
+ * ¿ESTE SOBRE ES DE ESA IDENTIDAD? La pregunta que sustituye a «¿lo firmó `data.issuer`?».
+ *
+ * Antes el emisor y el firmante eran la misma llave, así que bastaba comprobar la firma
+ * contra `data.issuer`. Con varios aparatos ya no: firma el APARATO, y a nombre de la
+ * identidad. Verificar contra `data.issuer` obligaba a poner ahí la llave del aparato — y
+ * entonces calificar desde el teléfono y desde el PC contaba como dos personas distintas.
+ *
+ * La cadena de selladores es lo que ata una cosa con la otra, y la comprueba el PILAR: no
+ * se reimplementa aquí. Es lógica de seguridad y tenerla en dos sitios es tenerla mal en
+ * uno de los dos, tarde o temprano.
+ *
+ * Se importa dinámicamente porque el pilar es ESM y este servidor es CommonJS.
+ */
+let actaMod = null;
+async function acta() {
+    if (!actaMod) actaMod = await import('@dotrino/identity/acta');
+    return actaMod;
+}
+
+async function verifySignedBy(data, signature, signer, chain) {
+    // SIN CADENA no se puede juzgar, y se dice que no en vez de caer a lo de antes: aceptar
+    // «el que dice ser» sin prueba es exactamente el agujero que esto viene a cerrar.
+    if (!Array.isArray(chain) || !chain.length) return false;
+    if (typeof signer !== 'string' || !signer) return false;
+    try {
+        const { verifySignedBy: verificar } = await acta();
+        const r = await verificar({ data, signature, publickey: signer, chain, expectedProfileId: data.issuer });
+        return !!r.ok;
+    } catch (_) { return false; }
+}
+
 function pubkeyId(jwkString) {
     try {
         const j = JSON.parse(jwkString);
@@ -68,4 +100,4 @@ function verifyReceipt(receipt, issuer, subject) {
     return verifySignature(payload, sigA, a) && verifySignature(payload, sigB, b);
 }
 
-module.exports = { verifySignature, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex };
+module.exports = { verifySignature, verifySignedBy, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex };

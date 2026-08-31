@@ -32,8 +32,15 @@ const DEFAULT_BASE = 'https://rep.dotrino.com'
 
 /**
  * @param {object} opts
- * @param {(data:object)=>Promise<string>} opts.signData   firma canónica → base64 (del vault)
- * @param {()=>Promise<string>} opts.getPublicKeyJwk        pubkey JWK string (del vault) = mi issuer
+ * @param {(data:object)=>Promise<{signature:string, profileId:string, chain:object[]}>} opts.signData
+ *   Firma del vault. Devuelve el PAQUETE, no solo la firma: quién firmó, a nombre de qué
+ *   identidad, y la cadena que lo prueba.
+ * @param {()=>Promise<string>} opts.getPublicKeyJwk
+ *   MI IDENTIDAD, que es el `profileId` — no la llave de este aparato.
+ *
+ *   La diferencia no es cosmética: si pasas la del aparato, calificar desde el teléfono y
+ *   desde el PC cuenta como DOS personas distintas y tu reputación se reparte entre ellas
+ *   en vez de acumularse. La app lo saca de `identity.profileActa()`, no de `me.publickey`.
  * @param {string} [opts.baseUrl]                           default https://rep.dotrino.com
  * @param {typeof fetch} [opts.fetch]
  */
@@ -59,34 +66,61 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    * @param {object} [p.receipt]
    * @returns {Promise<{ok:true, txBound:boolean}>}
    */
+  /**
+   * Firma y arma el paquete que viaja: `{ data, signature, chain }`.
+   *
+   * `data.issuer` sale del propio paquete de la firma (el `profileId`), no de preguntar
+   * aparte: si el que firma y el que dice ser no salieran del mismo sitio, se podrían
+   * separar — y eso es exactamente lo que hay que impedir. La cadena va al lado para que
+   * quien recibe pueda comprobar que ese firmante habla por esa identidad, sin preguntarle
+   * a nadie.
+   */
+  async function firmar (base_, extra) {
+    const data = { ...base_, issuer: await getPublicKeyJwk() }
+    if (extra) extra(data)
+    const res = await signData(data)
+    // Un vault viejo devuelve solo la firma: se acepta, y entonces no viaja cadena — quien
+    // reciba tendrá que conformarse con lo de antes.
+    if (typeof res === 'string') return { data, signature: res }
+    // `signer` es la llave que FIRMÓ (el aparato); `data.issuer` es a nombre de quién va
+    // (la identidad). Antes eran lo mismo y por eso no hacía falta mandarlo; ahora quien
+    // recibe necesita los dos para poder comprobar que el primero habla por el segundo.
+    return {
+      data,
+      signature: res.signature,
+      ...(res.publickey ? { signer: res.publickey } : {}),
+      ...(res.chain?.length ? { chain: res.chain } : {})
+    }
+  }
+
   async function publishRating ({ subject, indicators, rating, notes, receipt, now } = {}) {
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     const map = normalizeIndicators(indicators, rating)
     if (!Object.keys(map).length) throw new Error('indicators requerido (mapa indicador→0..5)')
-    const issuer = await getPublicKeyJwk()
-    // Incluimos `rating` (= confianza) además de `indicators` para compat con
-    // clientes/servidores 0.2.x que sólo entienden `rating`.
-    const data = { op: 'rating', subject, issuer, indicators: map, ts: now ?? Date.now() }
-    if (typeof map.confianza === 'number') data.rating = map.confianza
-    if (notes != null) data.notes = String(notes).slice(0, 280)
-    if (receipt) data.receipt = receipt
-    const signature = await signData(data)
+    // EL `issuer` ES LA IDENTIDAD, NO EL APARATO. Antes se ponía la llave del aparato que
+    // firmaba, así que calificar desde el teléfono y desde el PC contaba como DOS personas
+    // distintas — y la reputación se repartía entre ellas en vez de acumularse en ti.
+    // Ahora sale del paquete de la firma, que dice a nombre de quién va.
+    const firmado = await firmar({ op: 'rating', subject, indicators: map, ts: now ?? Date.now() }, (d) => {
+      // `rating` (= confianza) además de `indicators`, por compat con 0.2.x.
+      if (typeof map.confianza === 'number') d.rating = map.confianza
+      if (notes != null) d.notes = String(notes).slice(0, 280)
+      if (receipt) d.receipt = receipt
+    })
     ratingsCache.delete(subject) // mi atestación cambió → invalidá la lectura cacheada
     return handle(await doFetch(`${base}/ratings`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data, signature })
+      body: JSON.stringify(firmado)
     }))
   }
 
   /** Retira MI atestación sobre `subject` (tombstone firmado). */
   async function removeRating ({ subject, now } = {}) {
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'unrate', subject, issuer, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'unrate', subject, ts: now ?? Date.now() })
     ratingsCache.delete(subject) // mi atestación cambió → invalidá la lectura cacheada
     return handle(await doFetch(`${base}/ratings`, {
       method: 'DELETE', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data, signature })
+      body: JSON.stringify(firmado)
     }))
   }
 

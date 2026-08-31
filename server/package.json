@@ -1,7 +1,7 @@
 {
   "name": "dotrino-reputation-server",
-  "version": "0.1.0",
-  "description": "Servidor del registro de reputaci\u00f3n reputation.dotrino.com (HTTP/JSON + Postgres)",
+  "version": "0.10.0",
+  "description": "Servidor del registro de reputación reputation.dotrino.com (HTTP/JSON + Postgres)",
   "private": true,
   "type": "commonjs",
   "main": "server.js",
@@ -14,7 +14,8 @@
     "node": ">=18"
   },
   "dependencies": {
-    "pg": "^8.11.0"
+    "pg": "^8.11.0",
+    "@dotrino/identity": "^0.70.0"
   },
   "author": "seyacat",
   "license": "MIT",
