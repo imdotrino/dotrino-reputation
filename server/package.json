@@ -14,13 +14,13 @@
     "node": ">=18"
   },
   "dependencies": {
-    "pg": "^8.11.0",
-    "@dotrino/identity": "^0.70.0"
+    "@dotrino/identity": "0.84.0",
+    "pg": "^8.11.0"
   },
   "author": "seyacat",
   "license": "MIT",
   "devDependencies": {
-    "typescript": "5.9.3",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "5.9.3"
   }
 }

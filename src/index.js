@@ -51,6 +51,11 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   const doFetch = f || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null)
   if (!doFetch) throw new Error('dotrino-reputation: no hay fetch; inyectalo en opts.fetch')
   const base = baseUrl.replace(/\/+$/, '')
+  // PARA QUIÉN va lo que firmamos. Sale del `baseUrl`, no de una constante: quien
+  // autohospeda su registro tiene otro destinatario, y con un valor fijo una atestación
+  // firmada para el nuestro valdría ante el suyo. Si el `baseUrl` no es una URL, revienta
+  // AQUÍ, al crear el cliente, y no al calificar.
+  const aud = new URL(base).origin
 
   /**
    * Publica (o reemplaza) MI atestación sobre `subject`. Firmada por el vault.
@@ -76,12 +81,16 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    * a nadie.
    */
   async function firmar (base_, extra) {
-    const data = { ...base_, issuer: await getPublicKeyJwk() }
+    const data = { ...base_, aud, issuer: await getPublicKeyJwk() }
     if (extra) extra(data)
     const res = await signData(data)
-    // Un vault viejo devuelve solo la firma: se acepta, y entonces no viaja cadena — quien
-    // reciba tendrá que conformarse con lo de antes.
-    if (typeof res === 'string') return { data, signature: res }
+    // AQUÍ HABÍA UN REPLIEGUE: si la firma venía como texto suelto (un vault viejo) se
+    // mandaba sin cadena. Eso ya no vale nada —el registro rechaza lo que no puede
+    // comprobar— y encima escondía el fallo real: se veía un 401 en vez de «tu vault no
+    // devuelve la cadena». Se para y se dice.
+    if (typeof res === 'string') {
+      throw new Error('dotrino-reputation: signData debe devolver { signature, publickey, chain } (vault ≥ 0.84); sin la cadena el registro no puede comprobar quién firma por ti')
+    }
     // `signer` es la llave que FIRMÓ (el aparato); `data.issuer` es a nombre de quién va
     // (la identidad). Antes eran lo mismo y por eso no hacía falta mandarlo; ahora quien
     // recibe necesita los dos para poder comprobar que el primero habla por el segundo.
@@ -251,15 +260,14 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
     if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('value debe ser entero 0..5')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'rate', subject, issuer, channel, value, ts: now ?? Date.now() }
-    if (notes != null) data.notes = String(notes).slice(0, 280)
-    if (receipt) data.receipt = receipt
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'rate', subject, channel, value, ts: now ?? Date.now() }, (d) => {
+      if (notes != null) d.notes = String(notes).slice(0, 280)
+      if (receipt) d.receipt = receipt
+    })
     ratingsCache.delete(subject)
     return handle(await doFetch(`${base}/ratings`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data, signature })
+      body: JSON.stringify(firmado)
     }))
   }
 
@@ -333,12 +341,10 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     const t = String(text ?? '').trim()
     if (!t) throw new Error('text requerido')
     if (t.length > 280) throw new Error('text máximo 280')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'question', subject, issuer, text: t, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'question', subject, text: t, ts: now ?? Date.now() })
     questionsCache.delete(subject)
     return handle(await doFetch(`${base}/questions`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
     }))
   }
 
@@ -348,12 +354,10 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     const t = String(text ?? '').trim()
     if (!t) throw new Error('text requerido')
     if (t.length > 280) throw new Error('text máximo 280')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'answer', questionId, issuer, text: t, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'answer', questionId, text: t, ts: now ?? Date.now() })
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/answers`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
     }))
   }
 
@@ -374,25 +378,21 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Retira MI pregunta (tombstone firmado; sólo el autor). */
   async function removeQuestion ({ questionId, subject, now } = {}) {
     if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'delquestion', questionId, issuer, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'delquestion', questionId, ts: now ?? Date.now() })
     if (subject) questionsCache.delete(subject)
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/questions`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
     }))
   }
 
   /** Retira MI respuesta a una pregunta (tombstone firmado). */
   async function removeAnswer ({ questionId, now } = {}) {
     if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'delanswer', questionId, issuer, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'delanswer', questionId, ts: now ?? Date.now() })
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/answers`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
     }))
   }
 
@@ -453,12 +453,10 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   async function removeChannel ({ subject, channel, now } = {}) {
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
-    const issuer = await getPublicKeyJwk()
-    const data = { op: 'unrate', subject, issuer, channel, ts: now ?? Date.now() }
-    const signature = await signData(data)
+    const firmado = await firmar({ op: 'unrate', subject, channel, ts: now ?? Date.now() })
     ratingsCache.delete(subject)
     return handle(await doFetch(`${base}/ratings`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ data, signature })
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
     }))
   }
 
@@ -604,10 +602,10 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   }
 
   const client = createReputationClient({
-    signData: async data => {
-      const res = await identity.signData(data)
-      return typeof res === 'string' ? res : res.signature
-    },
+    // EL PAQUETE ENTERO, no solo la firma. Aplanarlo a texto tiraba `publickey` y `chain`,
+    // así que el registro no podía comprobar que este aparato habla por esta identidad y
+    // respondía 401 a todo lo que se firmara desde un segundo aparato.
+    signData: (data) => identity.signData(data),
     getPublicKeyJwk: async () => {
       const pk = await myPubkey()
       if (!pk) throw new Error('dotrino-reputation: el vault no tiene pubkey (¿conectado?)')

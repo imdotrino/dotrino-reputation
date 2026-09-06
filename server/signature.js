@@ -47,20 +47,26 @@ function verifySignature(data, signatureB64, signerJwkString) {
  *
  * Se importa dinámicamente porque el pilar es ESM y este servidor es CommonJS.
  */
-let actaMod = null;
-async function acta() {
-    if (!actaMod) actaMod = await import('@dotrino/identity/acta');
-    return actaMod;
+let pilarMod = null;
+async function pilar() {
+    if (!pilarMod) pilarMod = await import('@dotrino/identity/assertion');
+    return pilarMod;
 }
 
-async function verifySignedBy(data, signature, signer, chain) {
+async function verifySignedBy(data, signature, signer, chain, audience) {
     // SIN CADENA no se puede juzgar, y se dice que no en vez de caer a lo de antes: aceptar
     // «el que dice ser» sin prueba es exactamente el agujero que esto viene a cerrar.
     if (!Array.isArray(chain) || !chain.length) return false;
     if (typeof signer !== 'string' || !signer) return false;
+    // Y sin saber quién SOY yo, tampoco: comparar el destinatario contra un valor que no
+    // tengo es no comprobarlo.
+    if (typeof audience !== 'string' || !audience) return false;
     try {
-        const { verifySignedBy: verificar } = await acta();
-        const r = await verificar({ data, signature, publickey: signer, chain, expectedProfileId: data.issuer });
+        // PARA QUIÉN ES, además de de quién. Sin destinatario, una atestación firmada para
+        // este registro la aceptaba igual el índice geo, y al revés. Lo comprueba el PILAR
+        // (`@dotrino/identity/assertion`), no este servidor.
+        const { verifySignedFor } = await pilar();
+        const r = await verifySignedFor({ data, signature, publickey: signer, chain, audience, expectedProfileId: data.issuer });
         return !!r.ok;
     } catch (_) { return false; }
 }

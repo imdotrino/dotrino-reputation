@@ -25,6 +25,16 @@ const rl = require('./rateLimiter.js');
 const PORT = Number(process.env.PORT || 8091);
 const DATABASE_URL = process.env.DATABASE_URL || '';
 const CLOCK_SKEW_MS = Number(process.env.REP_CLOCK_SKEW_MS || 5 * 60 * 1000);
+/**
+ * PARA QUIÉN firman los clientes: la URL pública del SERVICIO. Se admite una lista para
+ * cuando responde en varios nombres (este registro se llamó `reputation.` antes que `rep.`).
+ *
+ * SIN VALOR NO SE ARRANCA. Un registro que acepta cualquier destinatario no comprueba
+ * nada, y el fallo sería mudo: entrarían atestaciones firmadas para otro servicio.
+ */
+const AUDIENCES = (process.env.REP_AUDIENCE || '').split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+/** ¿Viene dirigido a mí? Se mira antes que la firma: una firma válida para otro no es para mí. */
+const paraMi = (data) => typeof data?.aud === 'string' && AUDIENCES.includes(data.aud.replace(/\/+$/, ''));
 const MAX_BODY = 32 * 1024;          // sobres con recibo pueden ser algo más grandes
 const MAX_QUERY_LIMIT = 500;
 
@@ -86,7 +96,7 @@ async function handlePut(req, res, now) {
     if (!data || typeof data !== 'object') return send(res, 400, { error: 'falta data' });
     // Tipo "atestación" por CANAL independiente (modelo nuevo). Cada indicador es
     // su propio registro firmado: {op:'rate', subject, issuer, channel, value, ts}.
-    if (data.op === 'rate') return await handleRate(res, now, data, signature);
+    if (data.op === 'rate') return await handleRate(res, now, data, signature, signer, chain);
     if (data.op !== 'rating') return send(res, 400, { error: 'op debe ser "rate" o "rating"' });
     if (typeof data.issuer !== 'string' || typeof data.subject !== 'string')
         return send(res, 400, { error: 'issuer y subject requeridos (JWK)' });
@@ -99,7 +109,8 @@ async function handlePut(req, res, now) {
     // La atestación la firma un APARATO, a nombre de una identidad. La cadena de
     // selladores es lo que prueba que ese aparato habla por esa identidad; sin ella no se
     // acepta, porque creerle el `issuer` a quien lo escribe es no comprobar nada.
-    if (!await verifySignedBy(data, signature, signer, chain))
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
         return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(data.ts, now))
         return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
@@ -134,7 +145,8 @@ async function handleDelete(req, res, now) {
     if (data.op !== 'unrate') return send(res, 400, { error: 'op debe ser "unrate"' });
     if (typeof data.issuer !== 'string' || typeof data.subject !== 'string')
         return send(res, 400, { error: 'issuer y subject requeridos' });
-    if (!await verifySignedBy(data, signature, signer, chain))
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
         return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(data.ts, now)) return send(res, 401, { error: 'sobre vencido' });
     const issuerId = pubkeyId(data.issuer), subjectId = pubkeyId(data.subject);
@@ -180,7 +192,7 @@ async function handleGet(req, res, url) {
 
 // Atestación por CANAL independiente (tipo "atestación"): {op:'rate', subject,
 // issuer, channel, value, ts, notes?, receipt?}. Cada indicador su propio registro.
-async function handleRate(res, now, data, signature) {
+async function handleRate(res, now, data, signature, signer, chain) {
     const { subject, issuer, channel, value, ts } = data;
     if (typeof subject !== 'string' || typeof issuer !== 'string')
         return send(res, 400, { error: 'issuer y subject requeridos (JWK)' });
@@ -191,7 +203,12 @@ async function handleRate(res, now, data, signature) {
         return send(res, 400, { error: `"${channel}" es un indicador derivado: se reporta por /events, no por atestación` });
     if (!Number.isInteger(value) || value < 0 || value > 5)
         return send(res, 400, { error: 'value debe ser entero 0..5' });
-    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
+    // contra `issuer` a secas, así que calificar o preguntar desde un segundo aparato de tu
+    // cuenta daba «firma inválida».
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
     let txBound = false;
     if (data.receipt !== undefined) {
@@ -224,6 +241,10 @@ async function handlePutEvent(req, res, now) {
     if (typeof ts !== 'number') return send(res, 400, { error: 'ts requerido' });
     if (typeof sigA !== 'string' || typeof sigB !== 'string')
         return send(res, 400, { error: 'sigA y sigB requeridos' });
+    // DEUDA DECLARADA: este sobre NO lleva destinatario. Es el único que queda, y es
+    // distinto de los demás: no es una atestación de una identidad a este registro, sino un
+    // evento CO-FIRMADO por dos partes (lo arma el lobby al cerrar una partida), así que
+    // añadirle `aud` obliga a cambiar quien lo co-firma. Se cierra al tocar `@dotrino/lobby`.
     if (!verifySignature(data, sigA, a) || !verifySignature(data, sigB, b))
         return send(res, 401, { error: 'co-firma inválida' });
 
@@ -251,7 +272,7 @@ async function handleGetDerived(req, res, url) {
 // la credibilidad de quienes responden (anti-sybil). question_id es
 // content-addressed: sha256(canónico {op:'question',subject,issuer,text,ts}).
 async function handlePutQuestion(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object' || data.op !== 'question')
         return send(res, 400, { error: 'op debe ser "question"' });
     const { subject, issuer, text, ts } = data;
@@ -259,7 +280,12 @@ async function handlePutQuestion(req, res, now) {
         return send(res, 400, { error: 'subject e issuer requeridos' });
     if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
     if (text.length > 280) return send(res, 400, { error: 'text máximo 280' });
-    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
+    // contra `issuer` a secas, así que calificar o preguntar desde un segundo aparato de tu
+    // cuenta daba «firma inválida».
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
     const questionId = sha256hex(canonicalStringify({ op: 'question', subject, issuer, text, ts }));
     await db.upsertQuestion({
@@ -270,13 +296,18 @@ async function handlePutQuestion(req, res, now) {
 }
 
 async function handleDeleteQuestion(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object' || data.op !== 'delquestion')
         return send(res, 400, { error: 'op debe ser "delquestion"' });
     const { questionId, issuer, ts } = data;
     if (typeof questionId !== 'string' || typeof issuer !== 'string')
         return send(res, 400, { error: 'questionId e issuer requeridos' });
-    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
+    // contra `issuer` a secas, así que calificar o preguntar desde un segundo aparato de tu
+    // cuenta daba «firma inválida».
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido' });
     const removed = await db.deleteQuestion(questionId, pubkeyId(issuer));
     return send(res, 200, { ok: true, removed: removed > 0 });
@@ -292,7 +323,7 @@ async function handleGetQuestions(req, res, url) {
 }
 
 async function handlePutAnswer(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object' || data.op !== 'answer')
         return send(res, 400, { error: 'op debe ser "answer"' });
     const { questionId, issuer, text, ts } = data;
@@ -300,7 +331,12 @@ async function handlePutAnswer(req, res, now) {
         return send(res, 400, { error: 'questionId e issuer requeridos' });
     if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
     if (text.length > 280) return send(res, 400, { error: 'text máximo 280' });
-    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
+    // contra `issuer` a secas, así que calificar o preguntar desde un segundo aparato de tu
+    // cuenta daba «firma inválida».
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
     if (!(await db.questionExists(questionId))) return send(res, 400, { error: 'pregunta inexistente' });
     await db.upsertAnswer({
@@ -310,13 +346,18 @@ async function handlePutAnswer(req, res, now) {
 }
 
 async function handleDeleteAnswer(req, res, now) {
-    const { data, signature } = (await readBody(req)) || {};
+    const { data, signature, signer, chain } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object' || data.op !== 'delanswer')
         return send(res, 400, { error: 'op debe ser "delanswer"' });
     const { questionId, issuer, ts } = data;
     if (typeof questionId !== 'string' || typeof issuer !== 'string')
         return send(res, 400, { error: 'questionId e issuer requeridos' });
-    if (!verifySignature(data, signature, issuer)) return send(res, 401, { error: 'firma inválida' });
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
+    // contra `issuer` a secas, así que calificar o preguntar desde un segundo aparato de tu
+    // cuenta daba «firma inválida».
+    if (!await verifySignedBy(data, signature, signer, chain, data.aud))
+        return send(res, 401, { error: 'firma inválida o cadena que no prueba la identidad' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido' });
     const removed = await db.deleteAnswer(questionId, pubkeyId(issuer));
     return send(res, 200, { ok: true, removed: removed > 0 });
@@ -390,6 +431,12 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function main() {
+    // Sin destinatario declarado no se arranca: un registro que acepta cualquier `aud` no
+    // comprueba nada, y entrarían atestaciones firmadas para otro servicio.
+    if (!AUDIENCES.length) {
+        console.error('[reputation] REP_AUDIENCE is required: the public URL(s) this service is called by, comma separated (e.g. https://rep.dotrino.com)');
+        process.exit(1);
+    }
     await db.init(DATABASE_URL);
     setInterval(() => rl.prune(Date.now()), 60 * 1000).unref();
     server.listen(PORT, () => console.log(`[reputation] reputation.dotrino.com escuchando en :${PORT}`));

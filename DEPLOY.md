@@ -50,5 +50,6 @@ por un tercero.
 | `PORT` | `8091` | puerto HTTP (geo usa 8090) |
 | `DATABASE_URL` | — | base `reputation` propia |
 | `REP_CLOCK_SKEW_MS` | `300000` | anti-replay del sobre (5 min) |
+| `REP_AUDIENCE` | **sin valor: no arranca** | la URL pública del SERVICIO, que es para quien firman los clientes (`https://rep.dotrino.com`). Varias separadas por comas si responde en varios nombres — este registro respondió antes en `reputation.dotrino.com`. |
 | `REP_RL_READ_PER_MIN` | `600` | rate limit lectura por IP |
 | `REP_RL_WRITE_PER_MIN` | `120` | rate limit escritura por IP |
