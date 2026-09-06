@@ -118,7 +118,7 @@ async function handlePut(req, res, now) {
     // Recibo opcional: si viene, debe ser válido (no guardamos recibos falsos).
     let txBound = false;
     if (data.receipt !== undefined) {
-        if (!verifyReceipt(data.receipt, data.issuer, data.subject))
+        if (!await verifyReceipt(data.receipt, data.issuer, data.subject))
             return send(res, 400, { error: 'recibo inválido' });
         txBound = true;
     }
@@ -212,7 +212,7 @@ async function handleRate(res, now, data, signature, signer, chain) {
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'sobre vencido o reloj fuera de rango' });
     let txBound = false;
     if (data.receipt !== undefined) {
-        if (!verifyReceipt(data.receipt, issuer, subject)) return send(res, 400, { error: 'recibo inválido' });
+        if (!await verifyReceipt(data.receipt, issuer, subject)) return send(res, 400, { error: 'recibo inválido' });
         txBound = true;
     }
     await db.upsertAttestation({
@@ -227,7 +227,7 @@ async function handleRate(res, now, data, signature, signer, chain) {
 // { data:{op:'event', indicator, scope, a, b, outcome, ts}, sigA, sigB }. El server
 // computa el indicador (p.ej. ELO) y actualiza el valor derivado de a y b.
 async function handlePutEvent(req, res, now) {
-    const { data, sigA, sigB } = (await readBody(req)) || {};
+    const { data, sigA, sigB, signerA, chainA, signerB, chainB } = (await readBody(req)) || {};
     if (!data || typeof data !== 'object' || data.op !== 'event')
         return send(res, 400, { error: 'op debe ser "event"' });
     const { indicator, scope, a, b, outcome, ts } = data;
@@ -241,12 +241,13 @@ async function handlePutEvent(req, res, now) {
     if (typeof ts !== 'number') return send(res, 400, { error: 'ts requerido' });
     if (typeof sigA !== 'string' || typeof sigB !== 'string')
         return send(res, 400, { error: 'sigA y sigB requeridos' });
-    // DEUDA DECLARADA: este sobre NO lleva destinatario. Es el único que queda, y es
-    // distinto de los demás: no es una atestación de una identidad a este registro, sino un
-    // evento CO-FIRMADO por dos partes (lo arma el lobby al cerrar una partida), así que
-    // añadirle `aud` obliga a cambiar quien lo co-firma. Se cierra al tocar `@dotrino/lobby`.
-    if (!verifySignature(data, sigA, a) || !verifySignature(data, sigB, b))
-        return send(res, 401, { error: 'co-firma inválida' });
+    // CO-FIRMADO POR DOS, Y CADA MITAD SE COMPRUEBA IGUAL QUE LO DEMÁS: el destinatario
+    // primero, y después que quien firmó habla por ese jugador. Antes se verificaba contra
+    // `a` y `b` a secas, así que una partida jugada desde un segundo aparato no contaba.
+    if (!paraMi(data)) return send(res, 401, { error: 'destinatario ausente o de otro servicio' });
+    if (!await verifySignedBy(data, sigA, signerA, chainA, data.aud, a) ||
+        !await verifySignedBy(data, sigB, signerB, chainB, data.aud, b))
+        return send(res, 401, { error: 'co-firma inválida o cadena que no prueba la identidad' });
 
     const eventId = pubkeyId(`event|${indicator}|${scope}|${a}|${b}|${ts}`); // sha256 estable (idempotente)
     const r = await db.insertEventAndApply({

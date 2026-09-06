@@ -274,12 +274,20 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   // ── Indicadores DERIVADOS (tipo "derivado": elo, …) ────────────────
   /** Publica un evento CO-FIRMADO de un indicador derivado ({data,sigA,sigB}).
    *  La co-firma se arma fuera (p.ej. el lobby). Idempotente por (indicator,scope,a,b,ts). */
-  async function reportEvent ({ data, sigA, sigB } = {}) {
+  async function reportEvent ({ data, sigA, sigB, signerA, chainA, signerB, chainB } = {}) {
     if (!data || typeof data !== 'object') throw new Error('data requerido')
+    if (data.aud !== aud) throw new Error('dotrino-reputation: el evento se firmó para otro registro (aud)')
     if (typeof sigA !== 'string' || typeof sigB !== 'string') throw new Error('sigA y sigB requeridos')
+    // Cada mitad va con QUIÉN la firmó y su cadena: firma el aparato, y el evento es de la
+    // identidad. Sin eso el registro no puede comprobar que ese aparato habla por ese
+    // jugador, y una partida jugada desde el teléfono no contaría.
+    if (typeof signerA !== 'string' || typeof signerB !== 'string') throw new Error('signerA y signerB requeridos')
+    if (!Array.isArray(chainA) || !chainA.length || !Array.isArray(chainB) || !chainB.length) {
+      throw new Error('chainA y chainB requeridas')
+    }
     return handle(await doFetch(`${base}/events`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ data, sigA, sigB })
+      body: JSON.stringify({ data, sigA, signerA, chainA, sigB, signerB, chainB })
     }))
   }
 
@@ -461,6 +469,10 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   }
 
   return {
+    // PARA QUIÉN firma este cliente. Se expone porque el evento co-firmado del lobby lo
+    // necesita ANTES de firmar: el destinatario va dentro de lo que firman las dos partes,
+    // así que ponerlo al publicar no valdría de nada — la firma no lo cubriría.
+    audience: aud,
     publishRating, rate, removeRating, removeChannel, getRatings, aggregateTrust,
     credibilityOf, reportEvent, getDerived,
     postQuestion, postAnswer, getQuestions, getAnswers, removeQuestion, removeAnswer, rankQuestions

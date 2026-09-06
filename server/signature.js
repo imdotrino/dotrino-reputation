@@ -53,7 +53,12 @@ async function pilar() {
     return pilarMod;
 }
 
-async function verifySignedBy(data, signature, signer, chain, audience) {
+/**
+ * `expectedProfileId` es a nombre de QUIÉN debe ir la firma. Por omisión el `issuer` del
+ * sobre, que es el caso de una atestación; en un evento co-firmado son los dos jugadores
+ * (`data.a` y `data.b`), y por eso se puede decir desde fuera en vez de estar clavado.
+ */
+async function verifySignedBy(data, signature, signer, chain, audience, expectedProfileId = undefined) {
     // SIN CADENA no se puede juzgar, y se dice que no en vez de caer a lo de antes: aceptar
     // «el que dice ser» sin prueba es exactamente el agujero que esto viene a cerrar.
     if (!Array.isArray(chain) || !chain.length) return false;
@@ -66,7 +71,7 @@ async function verifySignedBy(data, signature, signer, chain, audience) {
         // este registro la aceptaba igual el índice geo, y al revés. Lo comprueba el PILAR
         // (`@dotrino/identity/assertion`), no este servidor.
         const { verifySignedFor } = await pilar();
-        const r = await verifySignedFor({ data, signature, publickey: signer, chain, audience, expectedProfileId: data.issuer });
+        const r = await verifySignedFor({ data, signature, publickey: signer, chain, audience, expectedProfileId: expectedProfileId === undefined ? data.issuer : expectedProfileId });
         return !!r.ok;
     } catch (_) { return false; }
 }
@@ -94,16 +99,29 @@ function sha256hex(s) { return crypto.createHash('sha256').update(String(s)).dig
  * sigA firma {op:'receipt',a,b,ts} con la clave a, y sigB con la clave b.
  * Devuelve true sólo si AMBAS firmas son válidas y {a,b} == {issuer,subject}.
  */
-function verifyReceipt(receipt, issuer, subject) {
+async function verifyReceipt(receipt, issuer, subject) {
     if (!receipt || typeof receipt !== 'object') return false;
-    const { a, b, ts, sigA, sigB } = receipt;
+    const { a, b, ts, sigA, sigB, signerA, chainA, signerB, chainB } = receipt;
     if (typeof a !== 'string' || typeof b !== 'string' || typeof ts !== 'number') return false;
     // El recibo debe ser entre el emisor y el sujeto (en cualquier orden).
     const pair = (samePubkey(a, issuer) && samePubkey(b, subject)) ||
                  (samePubkey(a, subject) && samePubkey(b, issuer));
     if (!pair) return false;
+    // NO LLEVA DESTINATARIO, y es a propósito: el recibo no se manda solo, viaja DENTRO de
+    // una atestación que ya dice para quién es. Lo que sí lleva, como todo lo demás, es la
+    // cadena de cada firmante: firma el aparato y el recibo es entre dos personas, así que
+    // sin ella una partida jugada desde el teléfono no podía respaldar una calificación.
     const payload = { op: 'receipt', a, b, ts };
-    return verifySignature(payload, sigA, a) && verifySignature(payload, sigB, b);
+    const mitad = async (sig, signer, chain, quien) => {
+        if (typeof sig !== 'string' || typeof signer !== 'string') return false;
+        if (!Array.isArray(chain) || !chain.length) return false;
+        try {
+            const { verifySignedBy: verificar } = await import('@dotrino/identity/acta');
+            const r = await verificar({ data: payload, signature: sig, publickey: signer, chain, expectedProfileId: quien });
+            return !!r.ok;
+        } catch (_) { return false; }
+    };
+    return (await mitad(sigA, signerA, chainA, a)) && (await mitad(sigB, signerB, chainB, b));
 }
 
 module.exports = { verifySignature, verifySignedBy, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex };
