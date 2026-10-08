@@ -14,7 +14,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@dotrino/identity": "0.84.0",
+    "@dotrino/identity": "0.109.0",
     "pg": "^8.11.0"
   },
   "author": "seyacat",
