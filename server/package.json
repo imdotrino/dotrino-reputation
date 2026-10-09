@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@dotrino/identity": "0.109.0",
+    "@dotrino/update": "0.6.0",
     "pg": "^8.11.0"
   },
   "author": "seyacat",

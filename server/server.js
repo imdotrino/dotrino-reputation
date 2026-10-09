@@ -440,7 +440,15 @@ async function main() {
     }
     await db.init(DATABASE_URL);
     setInterval(() => rl.prune(Date.now()), 60 * 1000).unref();
-    server.listen(PORT, () => console.log(`[reputation] reputation.dotrino.com escuchando en :${PORT}`));
+    server.listen(PORT, () => console.log(`[reputation] reputation.dotrino.com listening on :${PORT}`));
+    startUpdateWatch();
+}
+
+// §15: lo que se queda atrás en un servicio desplegado desde git son sus pilares.
+function startUpdateWatch() {
+    import('@dotrino/update/deps')
+        .then(({ watchDependencies }) => watchDependencies({ dir: __dirname, name: 'reputation' }))
+        .catch((e) => console.error('[update] could not start the watch:', e.code || e.message));
 }
 
 main().catch(err => { console.error('[reputation] fatal', err); process.exit(1); });
