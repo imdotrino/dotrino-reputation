@@ -77,32 +77,32 @@ function normLinkedin (v) {
 export async function subjectRef (type, value) {
   switch (type) {
     case 'profile': {
-      if (!isJwk(value)) throw new Error('subjectRef profile: se requiere un JWK P-256')
+      if (!isJwk(value)) throw new Error('subjectRef profile: a P-256 JWK is required')
       return value // tal cual: mantiene continuidad con las calificaciones de perfiles
     }
     case 'domain': {
       const host = normDomain(value)
-      if (!isDomain(host)) throw new Error('subjectRef domain: dominio inválido')
+      if (!isDomain(host)) throw new Error('subjectRef domain: invalid domain')
       return `domain:${host}`
     }
     case 'x': {
       const h = extractHandle(value, ['x.com', 'twitter.com'])
-      if (!/^[a-z0-9_]{1,15}$/.test(h)) throw new Error('subjectRef x: handle inválido')
+      if (!/^[a-z0-9_]{1,15}$/.test(h)) throw new Error('subjectRef x: invalid handle')
       return `x:${h}`
     }
     case 'github': {
       const h = extractHandle(value, ['github.com'])
-      if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(h)) throw new Error('subjectRef github: handle inválido')
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/.test(h)) throw new Error('subjectRef github: invalid handle')
       return `github:${h}`
     }
     case 'linkedin': {
       const h = normLinkedin(value)
-      if (!/^[a-z0-9-]{3,100}$/.test(h)) throw new Error('subjectRef linkedin: slug inválido')
+      if (!/^[a-z0-9-]{3,100}$/.test(h)) throw new Error('subjectRef linkedin: invalid slug')
       return `linkedin:${h}`
     }
     case 'email': {
       const e = String(value).trim().toLowerCase()
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error('subjectRef email: correo inválido')
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) throw new Error('subjectRef email: invalid email')
       return `email:${await sha256hex(e)}`
     }
     default:

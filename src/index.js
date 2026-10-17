@@ -46,10 +46,10 @@ const DEFAULT_BASE = 'https://rep.dotrino.com'
  */
 export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = DEFAULT_BASE, fetch: f } = {}) {
   if (typeof signData !== 'function' || typeof getPublicKeyJwk !== 'function') {
-    throw new Error('dotrino-reputation: signData y getPublicKeyJwk son requeridos (del vault)')
+    throw new Error('dotrino-reputation: signData and getPublicKeyJwk are required (from the vault)')
   }
   const doFetch = f || (typeof fetch !== 'undefined' ? fetch.bind(globalThis) : null)
-  if (!doFetch) throw new Error('dotrino-reputation: no hay fetch; inyectalo en opts.fetch')
+  if (!doFetch) throw new Error('dotrino-reputation: no fetch available; inject it in opts.fetch')
   const base = baseUrl.replace(/\/+$/, '')
   // PARA QUIÉN va lo que firmamos. Sale del `baseUrl`, no de una constante: quien
   // autohospeda su registro tiene otro destinatario, y con un valor fijo una atestación
@@ -80,7 +80,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    * quien recibe pueda comprobar que ese firmante habla por esa identidad, sin preguntarle
    * a nadie.
    */
-  async function firmar (base_, extra) {
+  async function signRequest (base_, extra) {
     const data = { ...base_, aud, issuer: await getPublicKeyJwk() }
     if (extra) extra(data)
     const res = await signData(data)
@@ -89,7 +89,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     // comprobar— y encima escondía el fallo real: se veía un 401 en vez de «tu vault no
     // devuelve la cadena». Se para y se dice.
     if (typeof res === 'string') {
-      throw new Error('dotrino-reputation: signData debe devolver { signature, publickey, chain } (vault ≥ 0.84); sin la cadena el registro no puede comprobar quién firma por ti')
+      throw new Error('dotrino-reputation: signData must return { signature, publickey, chain } (vault >= 0.84); without the chain the registry cannot check who signs for you')
     }
     // `signer` es la llave que FIRMÓ (el aparato); `data.issuer` es a nombre de quién va
     // (la identidad). Antes eran lo mismo y por eso no hacía falta mandarlo; ahora quien
@@ -110,7 +110,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     // firmaba, así que calificar desde el teléfono y desde el PC contaba como DOS personas
     // distintas — y la reputación se repartía entre ellas en vez de acumularse en ti.
     // Ahora sale del paquete de la firma, que dice a nombre de quién va.
-    const firmado = await firmar({ op: 'rating', subject, indicators: map, ts: now ?? Date.now() }, (d) => {
+    const signed = await signRequest({ op: 'rating', subject, indicators: map, ts: now ?? Date.now() }, (d) => {
       // `rating` (= confianza) además de `indicators`, por compat con 0.2.x.
       if (typeof map.confianza === 'number') d.rating = map.confianza
       if (notes != null) d.notes = String(notes).slice(0, 280)
@@ -119,17 +119,17 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     ratingsCache.delete(subject) // mi atestación cambió → invalidá la lectura cacheada
     return handle(await doFetch(`${base}/ratings`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(firmado)
+      body: JSON.stringify(signed)
     }))
   }
 
   /** Retira MI atestación sobre `subject` (tombstone firmado). */
   async function removeRating ({ subject, now } = {}) {
-    const firmado = await firmar({ op: 'unrate', subject, ts: now ?? Date.now() })
+    const signed = await signRequest({ op: 'unrate', subject, ts: now ?? Date.now() })
     ratingsCache.delete(subject) // mi atestación cambió → invalidá la lectura cacheada
     return handle(await doFetch(`${base}/ratings`, {
       method: 'DELETE', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(firmado)
+      body: JSON.stringify(signed)
     }))
   }
 
@@ -204,7 +204,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
       decay = 0.5,
       minCredibility = 0.05
     } = cfg
-    if (typeof trustOf !== 'function') throw new Error('aggregateTrust: trustOf es requerido')
+    if (typeof trustOf !== 'function') throw new Error('aggregateTrust: trustOf is required')
 
     // Credibilidad transitiva de la OPINIÓN de `pk` para mí, anclada en el
     // observador (fábrica compartida con credibilityOf/rankQuestions).
@@ -258,16 +258,16 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    *  independiente firmado {op:'rate', subject, issuer, channel, value, ts}. */
   async function rate ({ subject, channel, value, notes, receipt, now } = {}) {
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
-    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
-    if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('value debe ser entero 0..5')
-    const firmado = await firmar({ op: 'rate', subject, channel, value, ts: now ?? Date.now() }, (d) => {
+    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('invalid channel (slug)')
+    if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('value must be an integer 0..5')
+    const signed = await signRequest({ op: 'rate', subject, channel, value, ts: now ?? Date.now() }, (d) => {
       if (notes != null) d.notes = String(notes).slice(0, 280)
       if (receipt) d.receipt = receipt
     })
     ratingsCache.delete(subject)
     return handle(await doFetch(`${base}/ratings`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(firmado)
+      body: JSON.stringify(signed)
     }))
   }
 
@@ -276,14 +276,14 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    *  La co-firma se arma fuera (p.ej. el lobby). Idempotente por (indicator,scope,a,b,ts). */
   async function reportEvent ({ data, sigA, sigB, signerA, chainA, signerB, chainB } = {}) {
     if (!data || typeof data !== 'object') throw new Error('data requerido')
-    if (data.aud !== aud) throw new Error('dotrino-reputation: el evento se firmó para otro registro (aud)')
-    if (typeof sigA !== 'string' || typeof sigB !== 'string') throw new Error('sigA y sigB requeridos')
+    if (data.aud !== aud) throw new Error('dotrino-reputation: the event was signed for another registry (aud)')
+    if (typeof sigA !== 'string' || typeof sigB !== 'string') throw new Error('sigA and sigB required')
     // Cada mitad va con QUIÉN la firmó y su cadena: firma el aparato, y el evento es de la
     // identidad. Sin eso el registro no puede comprobar que ese aparato habla por ese
     // jugador, y una partida jugada desde el teléfono no contaría.
-    if (typeof signerA !== 'string' || typeof signerB !== 'string') throw new Error('signerA y signerB requeridos')
+    if (typeof signerA !== 'string' || typeof signerB !== 'string') throw new Error('signerA and signerB required')
     if (!Array.isArray(chainA) || !chainA.length || !Array.isArray(chainB) || !chainB.length) {
-      throw new Error('chainA y chainB requeridas')
+      throw new Error('chainA and chainB required')
     }
     return handle(await doFetch(`${base}/events`, {
       method: 'PUT', headers: { 'content-type': 'application/json' },
@@ -348,11 +348,11 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
     const t = String(text ?? '').trim()
     if (!t) throw new Error('text requerido')
-    if (t.length > 280) throw new Error('text máximo 280')
-    const firmado = await firmar({ op: 'question', subject, text: t, ts: now ?? Date.now() })
+    if (t.length > 280) throw new Error('text max 280')
+    const signed = await signRequest({ op: 'question', subject, text: t, ts: now ?? Date.now() })
     questionsCache.delete(subject)
     return handle(await doFetch(`${base}/questions`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed)
     }))
   }
 
@@ -361,11 +361,11 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
     const t = String(text ?? '').trim()
     if (!t) throw new Error('text requerido')
-    if (t.length > 280) throw new Error('text máximo 280')
-    const firmado = await firmar({ op: 'answer', questionId, text: t, ts: now ?? Date.now() })
+    if (t.length > 280) throw new Error('text max 280')
+    const signed = await signRequest({ op: 'answer', questionId, text: t, ts: now ?? Date.now() })
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/answers`, {
-      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed)
     }))
   }
 
@@ -386,21 +386,21 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Retira MI pregunta (tombstone firmado; sólo el autor). */
   async function removeQuestion ({ questionId, subject, now } = {}) {
     if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
-    const firmado = await firmar({ op: 'delquestion', questionId, ts: now ?? Date.now() })
+    const signed = await signRequest({ op: 'delquestion', questionId, ts: now ?? Date.now() })
     if (subject) questionsCache.delete(subject)
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/questions`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed)
     }))
   }
 
   /** Retira MI respuesta a una pregunta (tombstone firmado). */
   async function removeAnswer ({ questionId, now } = {}) {
     if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
-    const firmado = await firmar({ op: 'delanswer', questionId, ts: now ?? Date.now() })
+    const signed = await signRequest({ op: 'delanswer', questionId, ts: now ?? Date.now() })
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/answers`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed)
     }))
   }
 
@@ -460,11 +460,11 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Retira MI atestación de UN canal (des-calificar un eje). */
   async function removeChannel ({ subject, channel, now } = {}) {
     if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
-    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('channel inválido (slug)')
-    const firmado = await firmar({ op: 'unrate', subject, channel, ts: now ?? Date.now() })
+    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('invalid channel (slug)')
+    const signed = await signRequest({ op: 'unrate', subject, channel, ts: now ?? Date.now() })
     ratingsCache.delete(subject)
     return handle(await doFetch(`${base}/ratings`, {
-      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(firmado)
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signed)
     }))
   }
 
@@ -503,7 +503,7 @@ function attIndicators (a) {
   if (typeof a.rating === 'number') return { confianza: a.rating }
   return {}
 }
-function attConfianza (a) {
+function attTrust (a) {
   const ind = attIndicators(a)
   return typeof ind.confianza === 'number' ? ind.confianza : null
 }
@@ -550,8 +550,8 @@ export function myIndicators (attestations, me) {
  * decaimiento por salto y tope `maxDepth`; por debajo de eso vale 0.
  */
 function makeCredibility ({ trustOf, fetchRatings, myPubkey = null, maxDepth = 2, decay = 0.5 }) {
-  if (typeof trustOf !== 'function') throw new Error('makeCredibility: trustOf es requerido')
-  if (typeof fetchRatings !== 'function') throw new Error('makeCredibility: fetchRatings es requerido')
+  if (typeof trustOf !== 'function') throw new Error('makeCredibility: trustOf is required')
+  if (typeof fetchRatings !== 'function') throw new Error('makeCredibility: fetchRatings is required')
   const credCache = new Map() // issuerId -> credibility
   async function credibility (pk, depth = 1, visited = new Set()) {
     const id = pubkeyId(pk)
@@ -571,7 +571,7 @@ function makeCredibility ({ trustOf, fetchRatings, myPubkey = null, maxDepth = 2
       const cIssuer = await credibility(a.issuer, depth + 1, new Set(visited).add(iid))
       if (cIssuer <= 0) continue
       // La credibilidad transitiva se ancla SIEMPRE en confianza (el ancla anti-sybil).
-      const conf = attConfianza(a)
+      const conf = attTrust(a)
       const contribution = cIssuer * clamp01((conf ?? 0) / 5)
       if (contribution > best) best = contribution
     }
@@ -597,7 +597,7 @@ function makeCredibility ({ trustOf, fetchRatings, myPubkey = null, maxDepth = 2
  */
 export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
   if (!identity || typeof identity.signData !== 'function') {
-    throw new Error('dotrino-reputation: se requiere una instancia de identity conectada')
+    throw new Error('dotrino-reputation: a connected identity instance is required')
   }
   /**
    * Quién califica. Con ACTA DE PERFIL, quien opina es la PERSONA —su `profileId`—, no el
@@ -620,7 +620,7 @@ export function createVaultReputation (identity, { baseUrl, fetch: f } = {}) {
     signData: (data) => identity.signData(data),
     getPublicKeyJwk: async () => {
       const pk = await myPubkey()
-      if (!pk) throw new Error('dotrino-reputation: el vault no tiene pubkey (¿conectado?)')
+      if (!pk) throw new Error('dotrino-reputation: the vault has no pubkey (connected?)')
       return pk
     },
     baseUrl,

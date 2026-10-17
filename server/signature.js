@@ -47,10 +47,10 @@ function verifySignature(data, signatureB64, signerJwkString) {
  *
  * Se importa dinámicamente porque el pilar es ESM y este servidor es CommonJS.
  */
-let pilarMod = null;
-async function pilar() {
-    if (!pilarMod) pilarMod = await import('@dotrino/identity/assertion');
-    return pilarMod;
+let pillarMod = null;
+async function pillar() {
+    if (!pillarMod) pillarMod = await import('@dotrino/identity/assertion');
+    return pillarMod;
 }
 
 /**
@@ -70,7 +70,7 @@ async function verifySignedBy(data, signature, signer, chain, audience, expected
         // PARA QUIÉN ES, además de de quién. Sin destinatario, una atestación firmada para
         // este registro la aceptaba igual el índice geo, y al revés. Lo comprueba el PILAR
         // (`@dotrino/identity/assertion`), no este servidor.
-        const { verifySignedFor } = await pilar();
+        const { verifySignedFor } = await pillar();
         const r = await verifySignedFor({ data, signature, publickey: signer, chain, audience, expectedProfileId: expectedProfileId === undefined ? data.issuer : expectedProfileId });
         return !!r.ok;
     } catch (_) { return false; }
@@ -112,16 +112,16 @@ async function verifyReceipt(receipt, issuer, subject) {
     // cadena de cada firmante: firma el aparato y el recibo es entre dos personas, así que
     // sin ella una partida jugada desde el teléfono no podía respaldar una calificación.
     const payload = { op: 'receipt', a, b, ts };
-    const mitad = async (sig, signer, chain, quien) => {
+    const half = async (sig, signer, chain, who) => {
         if (typeof sig !== 'string' || typeof signer !== 'string') return false;
         if (!Array.isArray(chain) || !chain.length) return false;
         try {
-            const { verifySignedBy: verificar } = await import('@dotrino/identity/acta');
-            const r = await verificar({ data: payload, signature: sig, publickey: signer, chain, expectedProfileId: quien });
+            const { verifySignedBy: verify } = await import('@dotrino/identity/acta');
+            const r = await verify({ data: payload, signature: sig, publickey: signer, chain, expectedProfileId: who });
             return !!r.ok;
         } catch (_) { return false; }
     };
-    return (await mitad(sigA, signerA, chainA, a)) && (await mitad(sigB, signerB, chainB, b));
+    return (await half(sigA, signerA, chainA, a)) && (await half(sigB, signerB, chainB, b));
 }
 
 module.exports = { verifySignature, verifySignedBy, canonicalStringify, pubkeyId, samePubkey, verifyReceipt, sha256hex };

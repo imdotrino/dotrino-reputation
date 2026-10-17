@@ -13,22 +13,22 @@ import { createReputationClient } from '../src/index.js'
 const REP = 'https://rep.dotrino.com'
 const pk = (name) => JSON.stringify({ kty: 'EC', crv: 'P-256', x: name, y: 'Y' })
 
-function cliente ({ baseUrl = REP, signData } = {}) {
-  const enviado = []
+function makeClient ({ baseUrl = REP, signData } = {}) {
+  const sentList = []
   const client = createReputationClient({
     baseUrl,
     getPublicKeyJwk: async () => pk('yo'),
     signData: signData || (async () => ({ signature: 'firma', publickey: pk('este-aparato'), chain: [{ seq: 1 }] })),
     fetch: async (url, opts) => {
-      enviado.push({ url, method: opts?.method, body: JSON.parse(opts.body) })
+      sentList.push({ url, method: opts?.method, body: JSON.parse(opts.body) })
       return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
   })
-  return { client, enviado }
+  return { client, sentList }
 }
 
 test('toda escritura dice para quién es, y va con su cadena', async () => {
-  const { client, enviado } = cliente()
+  const { client, sentList } = makeClient()
   await client.rate({ subject: pk('otro'), channel: 'confianza', value: 4 })
   await client.removeChannel({ subject: pk('otro'), channel: 'confianza' })
   await client.publishRating({ subject: pk('otro'), rating: 5 })
@@ -38,8 +38,8 @@ test('toda escritura dice para quién es, y va con su cadena', async () => {
   await client.removeQuestion({ questionId: 'q1' })
   await client.removeAnswer({ questionId: 'q1' })
 
-  assert.equal(enviado.length, 8, 'las ocho escrituras')
-  for (const e of enviado) {
+  assert.equal(sentList.length, 8, 'las ocho escrituras')
+  for (const e of sentList) {
     assert.equal(e.body.data.aud, REP, `${e.body.data.op} sin destinatario`)
     assert.equal(e.body.data.issuer, pk('yo'), `${e.body.data.op}: a nombre de la identidad`)
     assert.equal(typeof e.body.signature, 'string', `${e.body.data.op}: la firma va como texto`)
@@ -49,13 +49,13 @@ test('toda escritura dice para quién es, y va con su cadena', async () => {
 })
 
 test('autohospedar cambia el destinatario', async () => {
-  const { client, enviado } = cliente({ baseUrl: 'https://rep.miempresa.com/' })
+  const { client, sentList } = makeClient({ baseUrl: 'https://rep.miempresa.com/' })
   await client.rate({ subject: pk('otro'), channel: 'confianza', value: 3 })
-  assert.equal(enviado[0].body.data.aud, 'https://rep.miempresa.com')
+  assert.equal(sentList[0].body.data.aud, 'https://rep.miempresa.com')
 })
 
 test('un vault que solo devuelve la firma se para y se dice, no se manda a medias', async () => {
-  const { client } = cliente({ signData: async () => 'solo-la-firma' })
+  const { client } = makeClient({ signData: async () => 'solo-la-firma' })
   await assert.rejects(
     () => client.rate({ subject: pk('otro'), channel: 'confianza', value: 4 }),
     /chain/,
@@ -64,5 +64,5 @@ test('un vault que solo devuelve la firma se para y se dice, no se manda a media
 })
 
 test('un baseUrl que no es una URL revienta al crear el cliente', () => {
-  assert.throws(() => cliente({ baseUrl: 'no-es-una-url' }))
+  assert.throws(() => makeClient({ baseUrl: 'no-es-una-url' }))
 })
