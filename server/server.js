@@ -378,6 +378,17 @@ async function handleGetAnswers(req, res, url) {
     return send(res, 200, { answers });
 }
 
+/**
+ * Cobra una petición de la clase `cls` ('read' | 'write') al limitador. Si no queda
+ * cupo, contesta 429 con `retry-after` y devuelve true: la ruta no sigue.
+ */
+function rateLimited(req, res, cls, now) {
+    const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
+    if (allowed) return false;
+    send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+    return true;
+}
+
 const server = http.createServer(async (req, res) => {
     const now = Date.now();
     try {
@@ -386,9 +397,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/health') return send(res, 200, { ok: true });
 
         if (url.pathname === '/ratings') {
-            const cls = req.method === 'GET' ? 'read' : 'write';
-            const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
-            if (!allowed) return send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+            if (rateLimited(req, res, req.method === 'GET' ? 'read' : 'write', now)) return;
             if (req.method === 'PUT') return await handlePut(req, res, now);
             if (req.method === 'DELETE') return await handleDelete(req, res, now);
             if (req.method === 'GET') return await handleGet(req, res, url);
@@ -397,18 +406,14 @@ const server = http.createServer(async (req, res) => {
 
         // ── Preguntas y respuestas sobre un sujeto ──────────────────────
         if (url.pathname === '/questions') {
-            const cls = req.method === 'GET' ? 'read' : 'write';
-            const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
-            if (!allowed) return send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+            if (rateLimited(req, res, req.method === 'GET' ? 'read' : 'write', now)) return;
             if (req.method === 'PUT') return await handlePutQuestion(req, res, now);
             if (req.method === 'DELETE') return await handleDeleteQuestion(req, res, now);
             if (req.method === 'GET') return await handleGetQuestions(req, res, url);
             return send(res, 405, { error: 'method not allowed' });
         }
         if (url.pathname === '/answers') {
-            const cls = req.method === 'GET' ? 'read' : 'write';
-            const { allowed, retryAfter } = rl.take(cls, rl.clientIp(req), now);
-            if (!allowed) return send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+            if (rateLimited(req, res, req.method === 'GET' ? 'read' : 'write', now)) return;
             if (req.method === 'PUT') return await handlePutAnswer(req, res, now);
             if (req.method === 'DELETE') return await handleDeleteAnswer(req, res, now);
             if (req.method === 'GET') return await handleGetAnswers(req, res, url);
@@ -417,14 +422,12 @@ const server = http.createServer(async (req, res) => {
 
         // ── Indicadores derivados (ELO y futuros) ───────────────────────
         if (url.pathname === '/events') {
-            const { allowed, retryAfter } = rl.take('write', rl.clientIp(req), now);
-            if (!allowed) return send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+            if (rateLimited(req, res, 'write', now)) return;
             if (req.method === 'PUT') return await handlePutEvent(req, res, now);
             return send(res, 405, { error: 'method not allowed' });
         }
         if (url.pathname === '/derived') {
-            const { allowed, retryAfter } = rl.take('read', rl.clientIp(req), now);
-            if (!allowed) return send(res, 429, { error: 'too many requests' }, { 'retry-after': String(retryAfter) });
+            if (rateLimited(req, res, 'read', now)) return;
             if (req.method === 'GET') return await handleGetDerived(req, res, url);
             return send(res, 405, { error: 'method not allowed' });
         }

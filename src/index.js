@@ -159,26 +159,8 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
     if (typeof subject !== 'string' || !subject) {
       return Promise.reject(new Error('subject required'))
     }
-    const cached = ratingsCache.get(subject)
-    if (cached) {
-      const ttl = cached.error ? RATINGS_NEG_TTL : RATINGS_TTL
-      if (Date.now() - cached.ts < ttl) {
-        return cached.error ? Promise.reject(cached.error) : Promise.resolve(cached.value)
-      }
-    }
-    const pending = ratingsInflight.get(subject)
-    if (pending) return pending
     const params = new URLSearchParams({ subject })
-    const p = Promise.resolve()
-      .then(() => doFetch(`${base}/ratings?${params.toString()}`))
-      .then(r => handle(r))
-      .then(
-        value => { ratingsCache.set(subject, { ts: Date.now(), value }); return value },
-        error => { ratingsCache.set(subject, { ts: Date.now(), error }); throw error }
-      )
-      .finally(() => { ratingsInflight.delete(subject) })
-    ratingsInflight.set(subject, p)
-    return p
+    return memoGet(ratingsCache, ratingsInflight, subject, () => `${base}/ratings?${params.toString()}`)
   }
 
   /**
@@ -324,7 +306,8 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   const answersCache = new Map()     // questionId -> { ts, value?|error? }
   const answersInflight = new Map()
 
-  // Mismo patrón cache+dedup que getRatings, parametrizado por store.
+  // Caché con TTL + caché negativa + dedup en vuelo, parametrizado por store (lo usan
+  // getRatings, las preguntas y las respuestas).
   function memoGet (cache, inflight, key, urlBuilder) {
     const cached = cache.get(key)
     if (cached) {
