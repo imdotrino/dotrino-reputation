@@ -25,7 +25,7 @@ export const SUBJECT_TYPES = ['profile', 'domain', 'x', 'github', 'linkedin', 'e
 /** sha256 hex con WebCrypto (navegador + Node 18+). */
 export async function sha256hex (str) {
   const subtle = globalThis.crypto && globalThis.crypto.subtle
-  if (!subtle) throw new Error('reputation: WebCrypto no disponible (sha256)')
+  if (!subtle) throw new Error('reputation: WebCrypto not available (sha256)')
   const buf = await subtle.digest('SHA-256', new TextEncoder().encode(String(str)))
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
 }
@@ -106,7 +106,7 @@ export async function subjectRef (type, value) {
       return `email:${await sha256hex(e)}`
     }
     default:
-      throw new Error(`subjectRef: tipo desconocido "${type}"`)
+      throw new Error(`subjectRef: unknown type "${type}"`)
   }
 }
 

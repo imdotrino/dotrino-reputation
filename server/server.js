@@ -73,7 +73,12 @@ function freshEnough(ts, now) {
 
 // Construye/valida el mapa de indicadores desde `indicators` (mapa) y/o `rating`
 // (=confianza). Devuelve el mapa, o null si algún valor provisto es inválido.
-// Nombres: slug corto [a-z][a-z0-9_]{0,23}. Valores: entero 0..5. Máx 12.
+// Nombre de un indicador (canal): slug corto. La misma regla vive en src/slug.js; el
+// servidor se construye aparte (contexto ./server) y no puede importar de allí.
+const SLUG = /^[a-z][a-z0-9_]{0,23}$/;
+const isSlug = (s) => typeof s === 'string' && SLUG.test(s);
+
+// Nombres: slug corto (isSlug). Valores: entero 0..5. Máx 12.
 function normalizeIndicators(indicators, rating) {
     const out = {};
     if (rating !== undefined) {
@@ -83,7 +88,7 @@ function normalizeIndicators(indicators, rating) {
     if (indicators !== undefined) {
         if (!indicators || typeof indicators !== 'object' || Array.isArray(indicators)) return null;
         for (const [k, v] of Object.entries(indicators)) {
-            if (!/^[a-z][a-z0-9_]{0,23}$/.test(k)) return null;
+            if (!isSlug(k)) return null;
             if (!Number.isInteger(v) || v < 0 || v > 5) return null;
             out[k] = v;
         }
@@ -105,7 +110,7 @@ async function handlePut(req, res, now) {
     // MULTIINDICADOR: aceptamos `indicators` (mapa) y/o `rating` (=confianza, compat).
     const indicators = normalizeIndicators(data.indicators, data.rating);
     if (!indicators) return send(res, 400, { error: 'invalid indicator (integer 0..5, slug name)' });
-    if (!Object.keys(indicators).length) return send(res, 400, { error: 'indicators o rating requerido' });
+    if (!Object.keys(indicators).length) return send(res, 400, { error: 'indicators or rating required' });
     // La atestación la firma un APARATO, a nombre de una identidad. La cadena de
     // selladores es lo que prueba que ese aparato habla por esa identidad; sin ella no se
     // acepta, porque creerle el `issuer` a quien lo escribe es no comprobar nada.
@@ -152,7 +157,7 @@ async function handleDelete(req, res, now) {
     const issuerId = pubkeyId(data.issuer), subjectId = pubkeyId(data.subject);
     if (typeof data.channel === 'string' && data.channel) {
         // Des-calificar UN eje (modelo por-canal).
-        if (!/^[a-z][a-z0-9_]{0,23}$/.test(data.channel)) return send(res, 400, { error: 'invalid channel (slug)' });
+        if (!isSlug(data.channel)) return send(res, 400, { error: 'invalid channel (slug)' });
         await db.deleteAttestation(issuerId, subjectId, data.channel);
     } else {
         // Des-calificar TODO: bundle legacy + todos los canales del par.
@@ -164,7 +169,7 @@ async function handleDelete(req, res, now) {
 
 async function handleGet(req, res, url) {
     const subject = url.searchParams.get('subject');
-    if (!subject) return send(res, 400, { error: 'subject requerido (pubkey JWK)' });
+    if (!subject) return send(res, 400, { error: 'subject required (pubkey JWK)' });
     let limit = Number(url.searchParams.get('limit') || 200);
     limit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit || 200));
     const sid = pubkeyId(subject);
@@ -197,7 +202,7 @@ async function handleRate(res, now, data, signature, signer, chain) {
     if (typeof subject !== 'string' || typeof issuer !== 'string')
         return send(res, 400, { error: 'issuer and subject required (JWK)' });
     if (samePubkey(issuer, subject)) return send(res, 400, { error: 'you cannot rate yourself' });
-    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel))
+    if (!isSlug(channel))
         return send(res, 400, { error: 'invalid channel (slug a-z0-9_)' });
     if (db.isDerivedIndicator(channel))
         return send(res, 400, { error: `"${channel}" is a derived indicator: it is reported through /events, not by attestation` });
@@ -232,13 +237,13 @@ async function handlePutEvent(req, res, now) {
         return send(res, 400, { error: 'op must be "event"' });
     const { indicator, scope, a, b, outcome, ts } = data;
     if (typeof indicator !== 'string' || !db.isDerivedIndicator(indicator))
-        return send(res, 400, { error: 'indicator derivado desconocido' });
+        return send(res, 400, { error: 'unknown derived indicator' });
     if (typeof scope !== 'string' || typeof a !== 'string' || typeof b !== 'string')
-        return send(res, 400, { error: 'scope, a, b requeridos' });
+        return send(res, 400, { error: 'scope, a, b required' });
     if (samePubkey(a, b)) return send(res, 400, { error: 'a and b must be different' });
     if (outcome !== 'a' && outcome !== 'b' && outcome !== 'draw')
         return send(res, 400, { error: 'outcome must be "a", "b" or "draw"' });
-    if (typeof ts !== 'number') return send(res, 400, { error: 'ts requerido' });
+    if (typeof ts !== 'number') return send(res, 400, { error: 'ts required' });
     if (typeof sigA !== 'string' || typeof sigB !== 'string')
         return send(res, 400, { error: 'sigA and sigB required' });
     // CO-FIRMADO POR DOS, Y CADA MITAD SE COMPRUEBA IGUAL QUE LO DEMÁS: el destinatario
@@ -279,7 +284,7 @@ async function handlePutQuestion(req, res, now) {
     const { subject, issuer, text, ts } = data;
     if (typeof subject !== 'string' || !subject || typeof issuer !== 'string' || !issuer)
         return send(res, 400, { error: 'subject and issuer required' });
-    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
+    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text required' });
     if (text.length > 280) return send(res, 400, { error: 'text max 280' });
     if (!isForMe(data)) return send(res, 401, { error: 'audience missing or for another service' });
     // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
@@ -316,7 +321,7 @@ async function handleDeleteQuestion(req, res, now) {
 
 async function handleGetQuestions(req, res, url) {
     const subject = url.searchParams.get('subject');
-    if (!subject) return send(res, 400, { error: 'subject requerido' });
+    if (!subject) return send(res, 400, { error: 'subject required' });
     let limit = Number(url.searchParams.get('limit') || 200);
     limit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit || 200));
     const questions = await db.questionsForSubject(pubkeyId(subject), limit);
@@ -330,7 +335,7 @@ async function handlePutAnswer(req, res, now) {
     const { questionId, issuer, text, ts } = data;
     if (typeof questionId !== 'string' || !questionId || typeof issuer !== 'string' || !issuer)
         return send(res, 400, { error: 'questionId and issuer required' });
-    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text requerido' });
+    if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'text required' });
     if (text.length > 280) return send(res, 400, { error: 'text max 280' });
     if (!isForMe(data)) return send(res, 401, { error: 'audience missing or for another service' });
     // Firma el APARATO a nombre de la identidad, y la cadena lo prueba. Antes se comprobaba
@@ -339,7 +344,7 @@ async function handlePutAnswer(req, res, now) {
     if (!await verifySignedBy(data, signature, signer, chain, data.aud))
         return send(res, 401, { error: 'invalid signature or a chain that does not prove the identity' });
     if (!freshEnough(ts, now)) return send(res, 401, { error: 'envelope expired or clock out of range' });
-    if (!(await db.questionExists(questionId))) return send(res, 400, { error: 'pregunta inexistente' });
+    if (!(await db.questionExists(questionId))) return send(res, 400, { error: 'question does not exist' });
     await db.upsertAnswer({
         questionId, issuerId: pubkeyId(issuer), issuer, text, ts, signature, updatedAt: now
     });
@@ -366,7 +371,7 @@ async function handleDeleteAnswer(req, res, now) {
 
 async function handleGetAnswers(req, res, url) {
     const questionId = url.searchParams.get('question');
-    if (!questionId) return send(res, 400, { error: 'question requerido' });
+    if (!questionId) return send(res, 400, { error: 'question required' });
     let limit = Number(url.searchParams.get('limit') || 500);
     limit = Math.max(1, Math.min(MAX_QUERY_LIMIT, limit || 500));
     const answers = await db.answersForQuestion(questionId, limit);

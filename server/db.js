@@ -115,7 +115,7 @@ async function getDerived(playerId, indicator, scope) {
 // derivado a ambas partes en una transacción. Si ya existía, NO re-aplica.
 async function insertEventAndApply({ eventId, indicator, scope, a, b, outcome, ts, sigA, sigB, aId, bId, now }) {
     const comp = COMPUTERS[indicator];
-    if (!comp) throw new Error('indicador derivado desconocido: ' + indicator);
+    if (!comp) throw new Error('unknown derived indicator: ' + indicator);
     const client = await pool.connect();
     try {
         await client.query('BEGIN');

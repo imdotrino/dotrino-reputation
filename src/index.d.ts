@@ -196,6 +196,8 @@ export function pubkeyId (jwkString: string): string
  * devuelve un solo eje y pierde el resto. Compara emisores con `samePubkey`.
  */
 export function myIndicators (attestations: Attestation[], me: string): Record<string, number>
+/** Nombre de indicador válido: slug [a-z][a-z0-9_]{0,23}. */
+export function isSlug (s: unknown): boolean
 export function canonicalStringify (value: unknown): string
 
 // ── Sujetos canónicos ──────────────────────────────────────────────

@@ -20,8 +20,10 @@
 
 import { canonicalStringify } from './canonical.js'
 import { isJwk } from './subject.js'
+import { isSlug } from './slug.js'
 
 export { canonicalStringify } from './canonical.js'
+export { isSlug } from './slug.js'
 export {
   subjectRef, parseSubjectRef, detectSubjectType, sha256hex, isJwk, SUBJECT_TYPES
 } from './subject.js'
@@ -103,9 +105,9 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   }
 
   async function publishRating ({ subject, indicators, rating, notes, receipt, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject required')
     const map = normalizeIndicators(indicators, rating)
-    if (!Object.keys(map).length) throw new Error('indicators requerido (mapa indicador→0..5)')
+    if (!Object.keys(map).length) throw new Error('indicators required (map indicator→0..5)')
     // EL `issuer` ES LA IDENTIDAD, NO EL APARATO. Antes se ponía la llave del aparato que
     // firmaba, así que calificar desde el teléfono y desde el PC contaba como DOS personas
     // distintas — y la reputación se repartía entre ellas en vez de acumularse en ti.
@@ -155,7 +157,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
    */
   function getRatings (subject) {
     if (typeof subject !== 'string' || !subject) {
-      return Promise.reject(new Error('subject requerido'))
+      return Promise.reject(new Error('subject required'))
     }
     const cached = ratingsCache.get(subject)
     if (cached) {
@@ -257,8 +259,8 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Publica MI atestación de UN indicador (canal) sobre `subject`: un registro
    *  independiente firmado {op:'rate', subject, issuer, channel, value, ts}. */
   async function rate ({ subject, channel, value, notes, receipt, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
-    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('invalid channel (slug)')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject required')
+    if (!isSlug(channel)) throw new Error('invalid channel (slug)')
     if (!Number.isInteger(value) || value < 0 || value > 5) throw new Error('value must be an integer 0..5')
     const signed = await signRequest({ op: 'rate', subject, channel, value, ts: now ?? Date.now() }, (d) => {
       if (notes != null) d.notes = String(notes).slice(0, 280)
@@ -275,7 +277,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
   /** Publica un evento CO-FIRMADO de un indicador derivado ({data,sigA,sigB}).
    *  La co-firma se arma fuera (p.ej. el lobby). Idempotente por (indicator,scope,a,b,ts). */
   async function reportEvent ({ data, sigA, sigB, signerA, chainA, signerB, chainB } = {}) {
-    if (!data || typeof data !== 'object') throw new Error('data requerido')
+    if (!data || typeof data !== 'object') throw new Error('data required')
     if (data.aud !== aud) throw new Error('dotrino-reputation: the event was signed for another registry (aud)')
     if (typeof sigA !== 'string' || typeof sigB !== 'string') throw new Error('sigA and sigB required')
     // Cada mitad va con QUIÉN la firmó y su cadena: firma el aparato, y el evento es de la
@@ -345,9 +347,9 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
 
   /** Publica MI pregunta sobre `subject` (firmada). → { ok, questionId }. */
   async function postQuestion ({ subject, text, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject required')
     const t = String(text ?? '').trim()
-    if (!t) throw new Error('text requerido')
+    if (!t) throw new Error('text required')
     if (t.length > 280) throw new Error('text max 280')
     const signed = await signRequest({ op: 'question', subject, text: t, ts: now ?? Date.now() })
     questionsCache.delete(subject)
@@ -358,9 +360,9 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
 
   /** Publica/reemplaza MI respuesta a una pregunta (una por perfil). → { ok }. */
   async function postAnswer ({ questionId, text, now } = {}) {
-    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId required')
     const t = String(text ?? '').trim()
-    if (!t) throw new Error('text requerido')
+    if (!t) throw new Error('text required')
     if (t.length > 280) throw new Error('text max 280')
     const signed = await signRequest({ op: 'answer', questionId, text: t, ts: now ?? Date.now() })
     answersCache.delete(questionId)
@@ -371,21 +373,21 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
 
   /** Preguntas crudas sobre un sujeto (memoizada). → { questions: [...] }. */
   function getQuestions (subject) {
-    if (typeof subject !== 'string' || !subject) return Promise.reject(new Error('subject requerido'))
+    if (typeof subject !== 'string' || !subject) return Promise.reject(new Error('subject required'))
     return memoGet(questionsCache, questionsInflight, subject,
       () => `${base}/questions?${new URLSearchParams({ subject }).toString()}`)
   }
 
   /** Respuestas crudas a una pregunta (memoizada). → { answers: [...] }. */
   function getAnswers (questionId) {
-    if (typeof questionId !== 'string' || !questionId) return Promise.reject(new Error('questionId requerido'))
+    if (typeof questionId !== 'string' || !questionId) return Promise.reject(new Error('questionId required'))
     return memoGet(answersCache, answersInflight, questionId,
       () => `${base}/answers?${new URLSearchParams({ question: questionId }).toString()}`)
   }
 
   /** Retira MI pregunta (tombstone firmado; sólo el autor). */
   async function removeQuestion ({ questionId, subject, now } = {}) {
-    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId required')
     const signed = await signRequest({ op: 'delquestion', questionId, ts: now ?? Date.now() })
     if (subject) questionsCache.delete(subject)
     answersCache.delete(questionId)
@@ -396,7 +398,7 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
 
   /** Retira MI respuesta a una pregunta (tombstone firmado). */
   async function removeAnswer ({ questionId, now } = {}) {
-    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId requerido')
+    if (typeof questionId !== 'string' || !questionId) throw new Error('questionId required')
     const signed = await signRequest({ op: 'delanswer', questionId, ts: now ?? Date.now() })
     answersCache.delete(questionId)
     return handle(await doFetch(`${base}/answers`, {
@@ -459,8 +461,8 @@ export function createReputationClient ({ signData, getPublicKeyJwk, baseUrl = D
 
   /** Retira MI atestación de UN canal (des-calificar un eje). */
   async function removeChannel ({ subject, channel, now } = {}) {
-    if (typeof subject !== 'string' || !subject) throw new Error('subject requerido')
-    if (typeof channel !== 'string' || !/^[a-z][a-z0-9_]{0,23}$/.test(channel)) throw new Error('invalid channel (slug)')
+    if (typeof subject !== 'string' || !subject) throw new Error('subject required')
+    if (!isSlug(channel)) throw new Error('invalid channel (slug)')
     const signed = await signRequest({ op: 'unrate', subject, channel, ts: now ?? Date.now() })
     ratingsCache.delete(subject)
     return handle(await doFetch(`${base}/ratings`, {
@@ -486,7 +488,7 @@ function normalizeIndicators (indicators, rating) {
   if (typeof rating === 'number') out.confianza = rating
   if (indicators && typeof indicators === 'object') {
     for (const [k, v] of Object.entries(indicators)) {
-      if (!/^[a-z][a-z0-9_]{0,23}$/.test(k)) continue
+      if (!isSlug(k)) continue
       if (Number.isInteger(v) && v >= 0 && v <= 5) out[k] = v
     }
   }
