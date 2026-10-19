@@ -493,7 +493,7 @@ function normalizeIndicators (indicators, rating) {
     }
   }
   for (const k of Object.keys(out)) {
-    if (!Number.isInteger(out[k]) || out[k] < 0 || out[k] > 5) throw new Error(`indicador ${k}: entero 0..5`)
+    if (!Number.isInteger(out[k]) || out[k] < 0 || out[k] > 5) throw new Error(`indicator ${k}: integer 0..5 required`)
   }
   return Object.fromEntries(Object.entries(out).slice(0, 12))
 }
